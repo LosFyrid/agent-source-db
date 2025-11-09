@@ -1,0 +1,8 @@
+# 环境变量 (非常重要！)
+.env
+.env.*
+
+__pycache__/
+.vscode/
+CLAUDE.md
+.dockerignore

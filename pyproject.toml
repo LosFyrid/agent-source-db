@@ -1,0 +1,4 @@
+[tool.ruff]
+line-length = 88
+select = ["E", "F", "W", "I"] # 开启 E/F/W 规则 (pyflakes, pycodestyle) 和 I (isort)
+ignore = ["E501"] # black 会处理行长
