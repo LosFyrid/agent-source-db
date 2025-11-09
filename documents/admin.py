@@ -9,7 +9,7 @@ from django.db.models import Count
 from django.urls import reverse
 import json
 
-from .models import Namespace, SchemaRegistry, SchemaField, AgentCard
+from .models import Namespace, SchemaRegistry, SchemaField, AgentCard, AgentExtension
 
 
 # ========================================
@@ -121,14 +121,11 @@ class SchemaRegistryAdmin(admin.ModelAdmin):
     field_count.short_description = '字段数量'
 
     def usage_count(self, obj):
-        count = AgentCard.objects.filter(
-            domain_extensions__has_key=obj.schema_uri
-        ).count()
+        count = obj.agent_extensions.count()
 
         if count > 0:
-            # 注意：这个过滤器在 Admin 中可能不工作，仅作为链接
-            url = reverse('admin:documents_agentcard_changelist')
-            return format_html('<a href="{}" title="查看使用此Schema的AgentCard">{} 个 AgentCard</a>', url, count)
+            url = reverse('admin:documents_agentextension_changelist') + f'?schema__id__exact={obj.id}'
+            return format_html('<a href="{}" title="查看使用此Schema的扩展">{} 个扩展</a>', url, count)
         return '0'
     usage_count.short_description = '使用情况'
 
@@ -170,45 +167,83 @@ class SchemaRegistryAdmin(admin.ModelAdmin):
             self.message_user(request, f'Schema "{obj.schema_type} {obj.version}" 已创建。现在可以添加字段了。')
 
 
-@admin.register(SchemaField)
-class SchemaFieldAdmin(admin.ModelAdmin):
-    """
-    独立的 SchemaField 管理（备用）
-    通常通过 SchemaRegistry 的内联编辑来管理
-    """
-    list_display = ['schema', 'field_name', 'field_type', 'is_required', 'order']
-    list_filter = ['field_type', 'is_required', 'schema__schema_type']
-    search_fields = ['field_name', 'description', 'schema__schema_type']
-    ordering = ['schema', 'order', 'field_name']
-
-    fieldsets = [
-        ('基本信息', {
-            'fields': ['schema', 'field_name', 'field_type', 'is_required', 'description', 'order']
-        }),
-        ('默认值', {
-            'fields': ['default_value'],
-        }),
-        ('约束条件（根据类型选填）', {
-            'fields': [
-                'enum_choices',
-                ('min_length', 'max_length'),
-                ('min_value', 'max_value'),
-                'pattern'
-            ],
-            'classes': ['collapse'],
-            'description': (
-                '根据字段类型填写相应的约束：<br>'
-                '- enum: 填写 enum_choices<br>'
-                '- string: 可设置 min_length, max_length, pattern<br>'
-                '- integer/number: 可设置 min_value, max_value'
-            )
-        }),
-    ]
+# SchemaField 不单独注册到 Admin，只通过 SchemaRegistry 的 inline 编辑
+# 这样可以简化侧边栏，避免导航混乱
+#
+# 如果需要独立管理 SchemaField，取消下面的注释：
+#
+# @admin.register(SchemaField)
+# class SchemaFieldAdmin(admin.ModelAdmin):
+#     """
+#     独立的 SchemaField 管理（备用）
+#     通常通过 SchemaRegistry 的内联编辑来管理
+#     """
+#     list_display = ['schema', 'field_name', 'field_type', 'is_required', 'order']
+#     list_filter = ['field_type', 'is_required', 'schema__schema_type']
+#     search_fields = ['field_name', 'description', 'schema__schema_type']
+#     ordering = ['schema', 'order', 'field_name']
+#
+#     fieldsets = [
+#         ('基本信息', {
+#             'fields': ['schema', 'field_name', 'field_type', 'is_required', 'description', 'order']
+#         }),
+#         ('默认值', {
+#             'fields': ['default_value'],
+#         }),
+#         ('约束条件（根据类型选填）', {
+#             'fields': [
+#                 'enum_choices',
+#                 ('min_length', 'max_length'),
+#                 ('min_value', 'max_value'),
+#                 'pattern'
+#             ],
+#             'classes': ['collapse'],
+#             'description': (
+#                 '根据字段类型填写相应的约束：<br>'
+#                 '- enum: 填写 enum_choices<br>'
+#                 '- string: 可设置 min_length, max_length, pattern<br>'
+#                 '- integer/number: 可设置 min_value, max_value'
+#             )
+#         }),
+#     ]
 
 
 # ========================================
 # AgentCard Admin
 # ========================================
+
+class AgentExtensionInline(admin.TabularInline):
+    """
+    内联编辑 Agent 扩展（AgentCapabilities.extensions）
+
+    A2A 协议支持通过 Extensions 机制扩展 AgentCard 的能力和信息。
+
+    常见扩展类型：
+    1. Data-only Extensions - 添加结构化信息到 AgentCard
+       示例：物理资产信息、GDPR 合规性数据
+       URI: https://your-org.com/extensions/physical-asset/v1
+       params: {"assetId": "HPLC-001", "location": {...}, "status": "OPERATIONAL"}
+
+    2. Method Extensions - 添加新的 RPC 方法
+       示例：任务搜索功能
+       URI: https://a2a.org/extensions/task-history/v1
+
+    3. Profile Extensions - 定义附加状态和约束
+       示例：图像生成的子状态
+
+    参考：https://a2a-protocol.org/latest/topics/extensions/
+    """
+    model = AgentExtension
+    extra = 0
+
+    # 字段顺序：核心字段在前，辅助字段在后
+    fields = ['uri', 'params', 'description', 'required', 'schema', 'order']
+    autocomplete_fields = ['schema']
+    ordering = ['order', 'uri']
+
+    verbose_name = "扩展"
+    verbose_name_plural = "Agent 扩展（AgentCapabilities.extensions）"
+
 
 @admin.register(AgentCard)
 class AgentCardAdmin(admin.ModelAdmin):
@@ -224,27 +259,43 @@ class AgentCardAdmin(admin.ModelAdmin):
         ('标识', {
             'fields': ['namespace', 'name', 'version', 'is_default_version', 'is_active']
         }),
-        ('L1 基本信息（A2A 协议）', {
+        ('L1 基本信息', {
             'fields': [
                 'protocol_version', 'description', 'url', 'preferred_transport',
                 'icon_url', 'documentation_url'
             ]
         }),
-        ('L1 能力配置', {
-            'fields': ['capabilities', 'default_input_modes', 'default_output_modes', 'skills'],
-            'classes': ['collapse'],
-            'description': '这些字段使用 JSON 格式存储'
+        ('AgentCapabilities（协议能力）', {
+            'fields': [
+                'capability_streaming',
+                'capability_push_notifications',
+                'capability_state_transition_history',
+            ],
+            'description': (
+                'AgentCapabilities 对象（A2A 5.5.2）：声明可选的协议特性。\n'
+                '• 勾选 Agent 支持的能力\n'
+                '• extensions 在下方 "Agent扩展" 区域管理（支持 Data-only、Method、Profile 等扩展类型）'
+            )
         }),
-        ('L1 高级选项', {
+        ('输入输出模式和技能', {
+            'fields': [
+                'default_input_modes',
+                'default_output_modes',
+                'skills'
+            ],
+            'description': (
+                'AgentCard 顶层字段（非 capabilities）：\n'
+                '• defaultInputModes: 支持的输入 MIME 类型\n'
+                '• defaultOutputModes: 支持的输出 MIME 类型\n'
+                '• skills: Agent 提供的技能列表'
+            )
+        }),
+        ('高级选项', {
             'fields': [
                 'provider', 'additional_interfaces', 'security_schemes',
                 'security', 'supports_authenticated_extended_card', 'signatures'
             ],
             'classes': ['collapse']
-        }),
-        ('L2 领域扩展', {
-            'fields': ['domain_extensions', 'extensions_preview'],
-            'description': '使用 Schema URI 作为 key 的扩展数据'
         }),
         ('元数据', {
             'fields': ['created_by', 'updated_by', 'created_at', 'updated_at', 'agentcard_json_preview'],
@@ -252,48 +303,24 @@ class AgentCardAdmin(admin.ModelAdmin):
         }),
     ]
 
-    readonly_fields = ['created_at', 'updated_at', 'extensions_preview', 'agentcard_json_preview']
+    readonly_fields = ['created_at', 'updated_at', 'agentcard_json_preview']
+
+    inlines = [AgentExtensionInline]
 
     def extension_count(self, obj):
-        count = len(obj.domain_extensions) if obj.domain_extensions else 0
+        count = obj.extensions.count()
         if count > 0:
-            schema_uris = list(obj.domain_extensions.keys())
-            tooltip = '<br>'.join(schema_uris[:3])
-            if len(schema_uris) > 3:
-                tooltip += f'<br>... 还有 {len(schema_uris) - 3} 个'
+            extensions = obj.extensions.all()[:3]
+            tooltip = '<br>'.join([ext.uri for ext in extensions])
+            if count > 3:
+                tooltip += f'<br>... 还有 {count - 3} 个'
             return format_html(
                 '<span title="{}">{} 个扩展</span>',
                 tooltip, count
             )
         return '0'
-    extension_count.short_description = 'L2 扩展数量'
+    extension_count.short_description = '扩展数量'
 
-    def extensions_preview(self, obj):
-        """预览 L2 扩展（带 Schema 信息）"""
-        if not obj.domain_extensions:
-            return format_html('<p style="color:#999;">未使用任何扩展</p>')
-
-        html = '<div style="background:#f9f9f9;padding:10px;border-radius:5px;">'
-
-        for schema_uri, data in obj.domain_extensions.items():
-            # 尝试获取 Schema 信息
-            try:
-                schema = SchemaRegistry.objects.get(schema_uri=schema_uri)
-                schema_info = f'<strong>{schema.schema_type} {schema.version}</strong>'
-                if not schema.is_active:
-                    schema_info += ' <span style="color:orange;">[未启用]</span>'
-            except SchemaRegistry.DoesNotExist:
-                schema_info = f'<span style="color:red;">未注册的 Schema</span>'
-
-            html += f'<div style="margin-bottom:15px;"><p style="margin:5px 0;">{schema_info}</p>'
-            html += f'<p style="margin:5px 0;font-size:11px;color:#666;"><code>{schema_uri}</code></p>'
-            html += '<div style="background:#fff;padding:8px;border-radius:3px;font-family:monospace;font-size:12px;">'
-            html += json.dumps(data, indent=2, ensure_ascii=False)
-            html += '</div></div>'
-
-        html += '</div>'
-        return format_html(html)
-    extensions_preview.short_description = 'L2 扩展预览'
 
     def agentcard_json_preview(self, obj):
         """预览完整的 AgentCard JSON（符合 A2A 规范）"""
@@ -313,6 +340,37 @@ class AgentCardAdmin(admin.ModelAdmin):
             obj.created_by = request.user
         obj.updated_by = request.user
         super().save_model(request, obj, form, change)
+
+
+# ========================================
+# AgentExtension Admin（独立管理）
+# ========================================
+
+# AgentExtension 不单独注册到 Admin，只通过 AgentCard 的 inline 编辑
+# 这样可以简化侧边栏，避免导航混乱
+#
+# 如果需要独立管理 AgentExtension，取消下面的注释：
+#
+# @admin.register(AgentExtension)
+# class AgentExtensionAdmin(admin.ModelAdmin):
+#     """
+#     AgentExtension 独立管理
+#     通常通过 AgentCardAdmin 的内联编辑来管理
+#     """
+#     list_display = ['uri', 'agent_card', 'schema', 'required', 'order']
+#     list_filter = ['required', 'schema']
+#     search_fields = ['uri', 'description', 'agent_card__name']
+#     ordering = ['agent_card', 'order', 'uri']
+#     autocomplete_fields = ['agent_card', 'schema']
+#
+#     fieldsets = [
+#         ('基本信息', {
+#             'fields': ['agent_card', 'uri', 'schema', 'order']
+#         }),
+#         ('配置', {
+#             'fields': ['description', 'required', 'params']
+#         }),
+#     ]
 
 
 # ========================================

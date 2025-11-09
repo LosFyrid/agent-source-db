@@ -17,7 +17,10 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 env = environ.Env()
-environ.Env.read_env(BASE_DIR / ".env.dev")
+# 根据环境变量 DJANGO_ENV 加载不同的配置文件
+# 默认为开发环境 (.env.dev)
+ENV_FILE = env.str('DJANGO_ENV_FILE', default='.env.dev')
+environ.Env.read_env(BASE_DIR / ENV_FILE)
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
@@ -114,6 +117,11 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'  # collectstatic 收集目标
+
+# Media files (User uploaded files)
+MEDIA_URL = 'media/'
+MEDIA_ROOT = BASE_DIR / 'media'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -145,4 +153,97 @@ REST_FRAMEWORK = {
 
     # 日期时间格式
     'DATETIME_FORMAT': '%Y-%m-%dT%H:%M:%S%z',
+}
+
+# ========================================
+# 日志配置（结构化日志）
+# ========================================
+
+# 日志目录
+LOGS_DIR = BASE_DIR / 'logs'
+LOGS_DIR.mkdir(exist_ok=True)
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {name} {module} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {asctime} {message}',
+            'style': '{',
+        },
+    },
+    'filters': {
+        'require_debug_false': {
+            '()': 'django.utils.log.RequireDebugFalse',
+        },
+    },
+    'handlers': {
+        'console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+        'file_all': {
+            'level': 'INFO',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': LOGS_DIR / 'django.log',
+            'maxBytes': 50 * 1024 * 1024,  # 50MB
+            'backupCount': 10,
+            'formatter': 'verbose',
+        },
+        'file_error': {
+            'level': 'WARNING',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': LOGS_DIR / 'error.log',
+            'maxBytes': 50 * 1024 * 1024,  # 50MB
+            'backupCount': 10,
+            'formatter': 'verbose',
+        },
+        'file_access': {
+            'level': 'INFO',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': LOGS_DIR / 'access.log',
+            'maxBytes': 50 * 1024 * 1024,  # 50MB
+            'backupCount': 10,
+            'formatter': 'verbose',
+        },
+        'file_db': {
+            'level': 'WARNING',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': LOGS_DIR / 'db.log',
+            'maxBytes': 50 * 1024 * 1024,  # 50MB
+            'backupCount': 10,
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console', 'file_all', 'file_error'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'django.request': {
+            'handlers': ['file_access', 'file_error'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'django.db.backends': {
+            'handlers': ['file_db'],
+            'level': 'WARNING',  # 只记录慢查询和错误
+            'propagate': False,
+        },
+        'documents': {
+            'handlers': ['console', 'file_all', 'file_error'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+    'root': {
+        'handlers': ['console', 'file_all'],
+        'level': 'INFO',
+    },
 }

@@ -210,20 +210,15 @@ class SchemaRegistry(models.Model):
 
     def delete(self, *args, **kwargs):
         """
-        删除前检查：如果有 AgentCard 正在使用此 Schema，禁止删除
+        删除前检查：如果有 AgentExtension 正在使用此 Schema，禁止删除
         """
-        # 需要导入 AgentCard（避免循环导入）
-        from .models import AgentCard
-
-        usage_count = AgentCard.objects.filter(
-            domain_extensions__has_key=self.schema_uri
-        ).count()
+        usage_count = self.agent_extensions.count()
 
         if usage_count > 0:
             raise ValidationError(
                 f"无法删除 Schema '{self.schema_type} {self.version}'："
-                f"有 {usage_count} 个 AgentCard 正在使用此 Schema。"
-                f"请先更新或删除这些 AgentCard。"
+                f"有 {usage_count} 个 AgentExtension 正在使用此 Schema。"
+                f"请先更新或删除这些扩展。"
             )
 
         super().delete(*args, **kwargs)
@@ -562,36 +557,59 @@ class AgentCard(models.Model):
     preferred_transport = models.CharField(
         max_length=32,
         choices=[
-            ('http', 'HTTP/REST'),
-            ('grpc', 'gRPC'),
-            ('websocket', 'WebSocket'),
+            ('JSONRPC', 'JSON-RPC'),
+            ('GRPC', 'gRPC'),
+            ('HTTP+JSON', 'HTTP+JSON'),
         ],
-        default='http',
-        help_text="首选传输协议"
+        default='JSONRPC',
+        help_text=(
+            "首选传输协议（A2A 协议 5.6.1 - 必填字段）\n"
+            "• JSONRPC: JSON-RPC 2.0 over HTTP(S)\n"
+            "• GRPC: gRPC protocol\n"
+            "• HTTP+JSON: RESTful HTTP with JSON"
+        )
     )
 
     # ========================================
     # L1 嵌套对象（使用 JSONField 存储）
     # ========================================
 
+    # AgentCapabilities - 拆分为独立字段
+    capability_streaming = models.BooleanField(
+        default=False,
+        help_text="是否支持 SSE 流式响应（A2A 协议 5.5.2）"
+    )
+    capability_push_notifications = models.BooleanField(
+        default=False,
+        help_text="是否支持推送通知"
+    )
+    capability_state_transition_history = models.BooleanField(
+        default=False,
+        help_text="是否提供状态转换历史"
+    )
+
+    # 保留旧字段作为备份（迁移后将删除）
     capabilities = models.JSONField(
         default=dict,
         blank=True,
-        help_text="AgentCapabilities 对象，如 {'streaming': true, 'tools': true, 'responseFormats': ['text', 'json']}"
+        help_text="[已废弃] 旧的 capabilities 字段，数据已迁移到 capability_* 字段和 AgentExtension 模型"
     )
     default_input_modes = models.JSONField(
         default=list,
-        help_text="支持的输入 MIME 类型数组，如 ['text/plain', 'application/json', 'image/png']"
+        blank=True,
+        help_text="支持的输入 MIME 类型数组，如 ['text/plain', 'application/json', 'image/png']（A2A 必填，但数据库层允许暂时为空以支持渐进式录入）"
     )
     default_output_modes = models.JSONField(
         default=list,
-        help_text="支持的输出 MIME 类型数组，如 ['text/plain', 'application/json']"
+        blank=True,
+        help_text="支持的输出 MIME 类型数组，如 ['text/plain', 'application/json']（A2A 必填，但数据库层允许暂时为空以支持渐进式录入）"
     )
     skills = models.JSONField(
         default=list,
+        blank=True,
         help_text=(
             "AgentSkill 数组，每个 skill 包含: "
-            "{name, description, inputModes?, outputModes?, parameters?}"
+            "{name, description, inputModes?, outputModes?, parameters?}（A2A 必填，但数据库层允许暂时为空以支持渐进式录入）"
         )
     )
 
@@ -642,17 +660,15 @@ class AgentCard(models.Model):
     )
 
     # ========================================
-    # L2 扩展字段（核心设计）
+    # L2 扩展字段（已废弃，改用 AgentExtension 模型）
     # ========================================
 
     domain_extensions = models.JSONField(
         default=dict,
         blank=True,
         help_text=(
-            "L2 领域扩展数据，使用 Schema URI 作为命名空间。\n"
-            "格式: {schema_uri: {field: value, ...}, ...}\n"
-            "示例: {'https://my-org.com/schemas/physicalAsset/v1': "
-            "{'physicalAssetId': 'HPLC-001', 'locationId': 'Lab-A', 'status': 'OPERATIONAL'}}"
+            "[已废弃] 旧的 domainExtensions 字段，数据已迁移到 AgentExtension 模型。\n"
+            "新设计符合 A2A 协议标准，使用 AgentCapabilities.extensions[] 存储。"
         )
     )
 
@@ -707,7 +723,7 @@ class AgentCard(models.Model):
 
     def clean(self):
         """
-        模型级别的数据验证
+        模型级别的数据验证（A2A 协议严格模式）
         """
         super().clean()
 
@@ -728,11 +744,13 @@ class AgentCard(models.Model):
                     )
                 })
 
-        # 验证2：URL 必须使用 HTTPS（除非是开发环境的 localhost）
-        if not self.url.startswith('https://') and not self.url.startswith('http://localhost'):
-            raise ValidationError({
-                'url': "生产环境的 Agent URL 必须使用 HTTPS"
-            })
+        # 验证2：生产环境必须使用 HTTPS（符合 A2A 协议 Section 4.1）
+        from django.conf import settings
+        if not settings.DEBUG:  # 仅在生产环境（DEBUG=False）检查
+            if not self.url.startswith('https://'):
+                raise ValidationError({
+                    'url': "生产环境的 Agent URL 必须使用 HTTPS（符合 A2A 协议 Section 4.1 要求）"
+                })
 
         # 验证3：domain_extensions 中的 schema_uri 是否已注册（可选检查）
         for schema_uri in self.domain_extensions.keys():
@@ -759,17 +777,234 @@ class AgentCard(models.Model):
                 # 选项B：宽松模式 - 允许未注册的 schema_uri（当前采用）
                 pass
 
-        # 验证4：skills 数组格式
+        # ========================================
+        # A2A 协议字段格式验证（宽松模式 - 允许渐进式录入）
+        # ========================================
+        # 策略：
+        # - 数据库层：只验证格式，不强制必填（方便分步录入）
+        # - 输出层：to_agentcard_json() 严格验证必填字段
+        # ========================================
+
+        # 验证4：defaultInputModes（格式验证，允许为空）
+        if not isinstance(self.default_input_modes, list):
+            raise ValidationError({
+                'default_input_modes': "defaultInputModes 必须是一个数组"
+            })
+
+        # 如果有值，验证格式
+        if self.default_input_modes:
+            for mode in self.default_input_modes:
+                if not isinstance(mode, str):
+                    raise ValidationError({
+                        'default_input_modes': f"defaultInputModes 中的每个元素必须是字符串（MIME 类型），发现: {type(mode).__name__}"
+                    })
+                # 简单的 MIME 类型格式检查
+                if '/' not in mode:
+                    raise ValidationError({
+                        'default_input_modes': f"'{mode}' 不是有效的 MIME 类型格式（应为 'type/subtype'）"
+                    })
+
+        # 验证5：defaultOutputModes（格式验证，允许为空）
+        if not isinstance(self.default_output_modes, list):
+            raise ValidationError({
+                'default_output_modes': "defaultOutputModes 必须是一个数组"
+            })
+
+        # 如果有值，验证格式
+        if self.default_output_modes:
+            for mode in self.default_output_modes:
+                if not isinstance(mode, str):
+                    raise ValidationError({
+                        'default_output_modes': f"defaultOutputModes 中的每个元素必须是字符串（MIME 类型），发现: {type(mode).__name__}"
+                    })
+                if '/' not in mode:
+                    raise ValidationError({
+                        'default_output_modes': f"'{mode}' 不是有效的 MIME 类型格式（应为 'type/subtype'）"
+                    })
+
+        # 验证6：skills（格式验证，允许为空）
         if not isinstance(self.skills, list):
             raise ValidationError({
                 'skills': "skills 必须是一个数组"
             })
 
-        for skill in self.skills:
-            if not isinstance(skill, dict) or 'name' not in skill:
+        # 如果有 skills，验证结构
+        if self.skills:
+            for idx, skill in enumerate(self.skills):
+                if not isinstance(skill, dict):
+                    raise ValidationError({
+                        'skills': f"skills[{idx}] 必须是一个对象，发现: {type(skill).__name__}"
+                    })
+
+                # 必填字段检查（根据 A2A 协议，AgentSkill 的必填字段）
+                # 注意：examples 是可选的，不在必填列表中
+                required_skill_fields = ['id', 'name', 'description', 'tags']
+                for field in required_skill_fields:
+                    if field not in skill:
+                        raise ValidationError({
+                            'skills': f"skills[{idx}] 缺少必填字段 '{field}'（A2A 协议要求）"
+                        })
+
+                # 字段类型检查
+                if not isinstance(skill.get('id'), str):
+                    raise ValidationError({
+                        'skills': f"skills[{idx}].id 必须是字符串"
+                    })
+
+                if not isinstance(skill.get('name'), str):
+                    raise ValidationError({
+                        'skills': f"skills[{idx}].name 必须是字符串"
+                    })
+
+                if not isinstance(skill.get('description'), str):
+                    raise ValidationError({
+                        'skills': f"skills[{idx}].description 必须是字符串"
+                    })
+
+                if not isinstance(skill.get('tags'), list):
+                    raise ValidationError({
+                        'skills': f"skills[{idx}].tags 必须是字符串数组"
+                    })
+
+                for tag in skill.get('tags', []):
+                    if not isinstance(tag, str):
+                        raise ValidationError({
+                            'skills': f"skills[{idx}].tags 中的每个元素必须是字符串"
+                        })
+
+                # 可选字段验证（如果存在）
+                if 'examples' in skill:
+                    if not isinstance(skill['examples'], list):
+                        raise ValidationError({
+                            'skills': f"skills[{idx}].examples 必须是数组"
+                        })
+                    for example in skill['examples']:
+                        if not isinstance(example, str):
+                            raise ValidationError({
+                                'skills': f"skills[{idx}].examples 中的每个元素必须是字符串"
+                            })
+                if 'inputModes' in skill:
+                    if not isinstance(skill['inputModes'], list):
+                        raise ValidationError({
+                            'skills': f"skills[{idx}].inputModes 必须是字符串数组"
+                        })
+                    for mode in skill['inputModes']:
+                        if not isinstance(mode, str) or '/' not in mode:
+                            raise ValidationError({
+                                'skills': f"skills[{idx}].inputModes 包含无效的 MIME 类型: {mode}"
+                            })
+
+                if 'outputModes' in skill:
+                    if not isinstance(skill['outputModes'], list):
+                        raise ValidationError({
+                            'skills': f"skills[{idx}].outputModes 必须是字符串数组"
+                        })
+                    for mode in skill['outputModes']:
+                        if not isinstance(mode, str) or '/' not in mode:
+                            raise ValidationError({
+                                'skills': f"skills[{idx}].outputModes 包含无效的 MIME 类型: {mode}"
+                            })
+
+        # 验证7：provider（可选，但如果存在必须符合 AgentProvider 结构）
+        if self.provider:
+            if not isinstance(self.provider, dict):
                 raise ValidationError({
-                    'skills': "每个 skill 必须是包含 'name' 字段的对象"
+                    'provider': "provider 必须是一个对象"
                 })
+
+            if 'organization' not in self.provider:
+                raise ValidationError({
+                    'provider': "provider 必须包含 'organization' 字段"
+                })
+
+            if 'url' not in self.provider:
+                raise ValidationError({
+                    'provider': "provider 必须包含 'url' 字段"
+                })
+
+            if not isinstance(self.provider['organization'], str):
+                raise ValidationError({
+                    'provider': "provider.organization 必须是字符串"
+                })
+
+            if not isinstance(self.provider['url'], str):
+                raise ValidationError({
+                    'provider': "provider.url 必须是字符串"
+                })
+
+        # 验证8：additionalInterfaces（可选，AgentInterface 对象数组）
+        if self.additional_interfaces:
+            if not isinstance(self.additional_interfaces, list):
+                raise ValidationError({
+                    'additional_interfaces': "additionalInterfaces 必须是一个数组"
+                })
+
+            for idx, interface in enumerate(self.additional_interfaces):
+                if not isinstance(interface, dict):
+                    raise ValidationError({
+                        'additional_interfaces': f"additionalInterfaces[{idx}] 必须是一个对象"
+                    })
+
+                if 'url' not in interface:
+                    raise ValidationError({
+                        'additional_interfaces': f"additionalInterfaces[{idx}] 必须包含 'url' 字段"
+                    })
+
+                if 'transport' not in interface:
+                    raise ValidationError({
+                        'additional_interfaces': f"additionalInterfaces[{idx}] 必须包含 'transport' 字段"
+                    })
+
+                # transport 必须是有效值
+                valid_transports = ['JSONRPC', 'GRPC', 'HTTP+JSON']
+                if interface['transport'] not in valid_transports:
+                    raise ValidationError({
+                        'additional_interfaces': (
+                            f"additionalInterfaces[{idx}].transport 必须是以下值之一: "
+                            f"{', '.join(valid_transports)}"
+                        )
+                    })
+
+        # 验证9：securitySchemes（可选，但如果存在必须是对象）
+        if self.security_schemes:
+            if not isinstance(self.security_schemes, dict):
+                raise ValidationError({
+                    'security_schemes': "securitySchemes 必须是一个对象"
+                })
+
+            # 每个 scheme 应该有 type 字段
+            valid_security_types = ['APIKey', 'HTTPAuth', 'OAuth2', 'OpenIdConnect', 'MutualTLS']
+            for scheme_name, scheme_def in self.security_schemes.items():
+                if not isinstance(scheme_def, dict):
+                    raise ValidationError({
+                        'security_schemes': f"securitySchemes['{scheme_name}'] 必须是一个对象"
+                    })
+
+                if 'type' not in scheme_def:
+                    raise ValidationError({
+                        'security_schemes': f"securitySchemes['{scheme_name}'] 必须包含 'type' 字段"
+                    })
+
+                if scheme_def['type'] not in valid_security_types:
+                    raise ValidationError({
+                        'security_schemes': (
+                            f"securitySchemes['{scheme_name}'].type 必须是以下值之一: "
+                            f"{', '.join(valid_security_types)}"
+                        )
+                    })
+
+        # 验证10：security（可选，但如果存在必须是数组）
+        if self.security:
+            if not isinstance(self.security, list):
+                raise ValidationError({
+                    'security': "security 必须是一个数组"
+                })
+
+            for idx, requirement in enumerate(self.security):
+                if not isinstance(requirement, dict):
+                    raise ValidationError({
+                        'security': f"security[{idx}] 必须是一个对象"
+                    })
 
     def save(self, *args, **kwargs):
         """
@@ -833,6 +1068,99 @@ class AgentCard(models.Model):
             del self.domain_extensions[schema_uri]
             self.save(update_fields=['domain_extensions', 'updated_at'])
 
+    def to_dict_raw(self, include_metadata: bool = False) -> dict:
+        """
+        导出原始数据（不做 A2A 协议验证）
+
+        用途：
+        - 导出草稿数据（未完成的 AgentCard）
+        - 数据备份和迁移
+        - 调试和检查
+
+        与 to_agentcard_json() 的区别：
+        - to_dict_raw(): 数据库有什么就导出什么，不验证 A2A 协议
+        - to_agentcard_json(): 严格验证 A2A 协议，只导出完整的 AgentCard
+
+        Args:
+            include_metadata: 是否包含内部元数据（namespace, created_at 等）
+
+        Returns:
+            包含所有数据库字段的字典（可能不完整，不保证符合 A2A 协议）
+        """
+        # 基本字段（按照 A2A 协议结构组织，但不验证）
+        card = {
+            'protocolVersion': self.protocol_version,
+            'name': self.name,
+            'description': self.description,
+            'url': self.url,
+            'preferredTransport': self.preferred_transport,
+            'version': self.version,
+            'defaultInputModes': self.default_input_modes,
+            'defaultOutputModes': self.default_output_modes,
+            'skills': self.skills,
+        }
+
+        # 组装 capabilities 对象
+        capabilities = {}
+
+        # 布尔能力
+        if self.capability_streaming:
+            capabilities['streaming'] = True
+        if self.capability_push_notifications:
+            capabilities['pushNotifications'] = True
+        if self.capability_state_transition_history:
+            capabilities['stateTransitionHistory'] = True
+
+        # extensions 数组
+        extensions = []
+        for ext in self.extensions.order_by('order', 'uri'):
+            ext_dict = {'uri': ext.uri}
+            if ext.description:
+                ext_dict['description'] = ext.description
+            if ext.required:
+                ext_dict['required'] = True
+            if ext.params:
+                ext_dict['params'] = ext.params
+            extensions.append(ext_dict)
+
+        if extensions:
+            capabilities['extensions'] = extensions
+
+        # capabilities（即使为空也输出）
+        card['capabilities'] = capabilities
+
+        # 可选字段（仅在有值时添加）
+        if self.provider:
+            card['provider'] = self.provider
+        if self.icon_url:
+            card['iconUrl'] = self.icon_url
+        if self.documentation_url:
+            card['documentationUrl'] = self.documentation_url
+        if self.additional_interfaces:
+            card['additionalInterfaces'] = self.additional_interfaces
+        if self.security_schemes:
+            card['securitySchemes'] = self.security_schemes
+        if self.security:
+            card['security'] = self.security
+        if self.supports_authenticated_extended_card:
+            card['supportsAuthenticatedExtendedCard'] = True
+        if self.signatures:
+            card['signatures'] = self.signatures
+
+        # 可选：添加内部元数据
+        if include_metadata:
+            card['_metadata'] = {
+                'namespace': self.namespace.id,
+                'isDefaultVersion': self.is_default_version,
+                'isActive': self.is_active,
+                'createdAt': self.created_at.isoformat() if self.created_at else None,
+                'updatedAt': self.updated_at.isoformat() if self.updated_at else None,
+                'createdBy': self.created_by.username if self.created_by else None,
+                'updatedBy': self.updated_by.username if self.updated_by else None,
+            }
+
+        return card
+
     def to_agentcard_json(self, include_metadata: bool = False) -> dict:
         """
         导出为标准 AgentCard JSON 格式（用于 API 响应）
@@ -842,7 +1170,51 @@ class AgentCard(models.Model):
 
         Returns:
             符合 A2A 协议的 AgentCard JSON 对象
+
+        Raises:
+            ValidationError: 如果 AgentCard 不符合 A2A 协议必填字段要求
         """
+        # ========================================
+        # 严格 A2A 协议验证（输出层）
+        # ========================================
+        # 策略：在生成 JSON 之前，确保所有 A2A 协议必填字段都已填写
+        # 这与数据库层的宽松验证形成对比：
+        # - 数据库层（clean）：允许渐进式录入，只验证格式
+        # - 输出层（to_agentcard_json）：严格验证必填字段，确保符合 A2A 协议
+
+        errors = {}
+
+        # 1. 基本字段（字符串类型，不能为空）
+        if not self.name or not self.name.strip():
+            errors['name'] = "name 是 A2A 协议必填字段，不能为空"
+        if not self.description or not self.description.strip():
+            errors['description'] = "description 是 A2A 协议必填字段，不能为空"
+        if not self.url or not self.url.strip():
+            errors['url'] = "url 是 A2A 协议必填字段，不能为空"
+
+        # 2. defaultInputModes（必填，不能为空数组）
+        if not self.default_input_modes or len(self.default_input_modes) == 0:
+            errors['defaultInputModes'] = "defaultInputModes 是 A2A 协议必填字段，不能为空数组"
+
+        # 3. defaultOutputModes（必填，不能为空数组）
+        if not self.default_output_modes or len(self.default_output_modes) == 0:
+            errors['defaultOutputModes'] = "defaultOutputModes 是 A2A 协议必填字段，不能为空数组"
+
+        # 4. skills（必填，不能为空数组）
+        if not self.skills or len(self.skills) == 0:
+            errors['skills'] = "skills 是 A2A 协议必填字段，不能为空数组"
+
+        # 如果有错误，抛出异常
+        if errors:
+            error_msg = "AgentCard 不符合 A2A 协议要求，无法生成 JSON 输出：\n"
+            for field, msg in errors.items():
+                error_msg += f"  - {field}: {msg}\n"
+            error_msg += "\n请先在 Django Admin 中补充完整所有必填字段。"
+            raise ValidationError(error_msg)
+
+        # ========================================
+        # 构建 AgentCard JSON
+        # ========================================
         card = {
             'protocolVersion': self.protocol_version,
             'name': self.name,
@@ -850,11 +1222,39 @@ class AgentCard(models.Model):
             'url': self.url,
             'preferredTransport': self.preferred_transport,
             'version': self.version,
-            'capabilities': self.capabilities,
             'defaultInputModes': self.default_input_modes,
             'defaultOutputModes': self.default_output_modes,
             'skills': self.skills,
         }
+
+        # 组装 capabilities 对象（使用新字段结构）
+        capabilities = {}
+
+        # 布尔能力
+        if self.capability_streaming:
+            capabilities['streaming'] = True
+        if self.capability_push_notifications:
+            capabilities['pushNotifications'] = True
+        if self.capability_state_transition_history:
+            capabilities['stateTransitionHistory'] = True
+
+        # extensions 数组
+        extensions = []
+        for ext in self.extensions.order_by('order', 'uri'):
+            ext_dict = {'uri': ext.uri}
+            if ext.description:
+                ext_dict['description'] = ext.description
+            if ext.required:
+                ext_dict['required'] = True
+            if ext.params:
+                ext_dict['params'] = ext.params
+            extensions.append(ext_dict)
+
+        if extensions:
+            capabilities['extensions'] = extensions
+
+        # capabilities 是 A2A 协议必填字段，必须始终输出（即使为空对象）
+        card['capabilities'] = capabilities
 
         # 添加可选字段（仅在有值时添加）
         if self.provider:
@@ -873,10 +1273,6 @@ class AgentCard(models.Model):
             card['supportsAuthenticatedExtendedCard'] = True
         if self.signatures:
             card['signatures'] = self.signatures
-
-        # 添加 L2 扩展（仅在有数据时添加）
-        if self.domain_extensions:
-            card['domainExtensions'] = self.domain_extensions
 
         # 可选：添加内部元数据（非 A2A 标准，用于内部系统）
         if include_metadata:
@@ -942,3 +1338,130 @@ class AgentCard(models.Model):
         )
 
         return instance
+
+
+class AgentExtension(models.Model):
+    """
+    AgentCapabilities.extensions 成员（A2A 协议 5.5.2.1）
+
+    A2A 协议支持通过 Extensions 扩展 AgentCard 的能力和信息。
+
+    常见扩展类型：
+    1. Data-only Extensions - 添加结构化信息（不影响请求-响应流程）
+       示例：物理资产信息、GDPR 合规性数据
+       URI: https://your-org.com/extensions/physical-asset/v1
+       params: {"assetId": "HPLC-001", "location": {...}, "status": "OPERATIONAL"}
+
+    2. Method Extensions - 添加新的 RPC 方法
+       示例：任务搜索功能 (tasks/search)
+       URI: https://a2a.org/extensions/task-history/v1
+
+    3. Profile Extensions - 定义附加状态和约束
+       示例：图像生成的子状态 (generating-image)
+
+    参考文档：https://a2a-protocol.org/latest/topics/extensions/
+    """
+
+    agent_card = models.ForeignKey(
+        AgentCard,
+        on_delete=models.CASCADE,
+        related_name='extensions',
+        help_text="所属 AgentCard"
+    )
+
+    uri = models.URLField(
+        max_length=512,
+        help_text=(
+            "扩展的唯一标识 URI（A2A 协议要求）。\n"
+            "示例：\n"
+            "• Data-only: https://your-org.com/extensions/physical-asset/v1\n"
+            "• Method: https://a2a.org/extensions/task-history/v1\n"
+            "• Profile: https://your-org.com/extensions/image-generation/v1"
+        )
+    )
+
+    description = models.TextField(
+        blank=True,
+        help_text=(
+            "扩展说明（可选，A2A 协议字段）。\n"
+            "可从 SchemaRegistry 自动填充，或手动定制。"
+        )
+    )
+
+    required = models.BooleanField(
+        default=False,
+        help_text=(
+            "客户端是否必须理解此扩展（A2A 协议字段）。\n"
+            "通常为 false，仅关键扩展设为 true。"
+        )
+    )
+
+    params = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "扩展特定的配置参数（A2A 协议字段）。\n"
+            "• Data-only 扩展：结构化业务数据\n"
+            "• Method 扩展：方法配置参数\n"
+            "示例：{\"assetId\": \"HPLC-001\", \"status\": \"OPERATIONAL\"}"
+        )
+    )
+
+    order = models.IntegerField(
+        default=0,
+        help_text="[可选] 显示顺序（非 A2A 协议字段，仅用于 Admin 界面排序）"
+    )
+
+    schema = models.ForeignKey(
+        SchemaRegistry,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='agent_extensions',
+        help_text=(
+            "[可选] 关联的 Schema 定义（非 A2A 协议字段，内部使用）。\n"
+            "用于验证 params 数据结构和自动填充 description。\n"
+            "• Data-only 扩展：推荐关联 schema\n"
+            "• 其他扩展：可留空"
+        )
+    )
+
+    class Meta:
+        db_table = 'agent_extensions'
+        verbose_name = 'Agent扩展'
+        verbose_name_plural = 'Agent扩展'
+        unique_together = [('agent_card', 'uri')]
+        ordering = ['agent_card', 'order', 'uri']
+        indexes = [
+            models.Index(fields=['agent_card', 'uri']),
+        ]
+
+    def __str__(self):
+        schema_info = f" ({self.schema.schema_type} {self.schema.version})" if self.schema else ""
+        required_marker = " [必需]" if self.required else ""
+        return f"{self.uri}{schema_info}{required_marker}"
+
+    def clean(self):
+        super().clean()
+
+        # 如果关联了 schema，验证 params 数据
+        if self.schema:
+            is_valid, error_msg = self.schema.validate_extension_data(self.params)
+            if not is_valid:
+                raise ValidationError({
+                    'params': f"数据不符合 Schema '{self.schema}' 的定义:\n{error_msg}"
+                })
+
+            # 自动同步 uri（确保一致性）
+            if self.uri != self.schema.schema_uri:
+                raise ValidationError({
+                    'uri': f"URI 不匹配：字段值为 '{self.uri}'，但关联的 Schema URI 为 '{self.schema.schema_uri}'"
+                })
+
+    def save(self, *args, **kwargs):
+        # 自动从 schema 填充 description（如果为空）
+        if self.schema and not self.description:
+            self.description = self.schema.description or f"{self.schema.schema_type} {self.schema.version}"
+
+        self.full_clean()
+        super().save(*args, **kwargs)

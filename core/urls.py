@@ -17,10 +17,27 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 
+# 健康检查端点
+from documents.health import health_liveness, health_readiness, health_database
+
+# Admin 监控视图
+from documents.admin_views import system_status
+
 urlpatterns = [
+    # Admin 监控面板（必须放在 admin/ 之前，否则会被 admin.site.urls 捕获）
+    path('admin/system-status/', system_status, name='admin-system-status'),
+
+    # Django Admin
     path('admin/', admin.site.urls),
+
     # API 路由
     path('api/', include('documents.urls')),
+
     # DRF 可浏览 API 的登录/登出界面
     path('api-auth/', include('rest_framework.urls')),
+
+    # 健康检查端点
+    path('health/', health_liveness, name='health-liveness'),
+    path('health/ready/', health_readiness, name='health-readiness'),
+    path('health/db/', health_database, name='health-database'),
 ]

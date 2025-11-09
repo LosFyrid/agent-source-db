@@ -1,0 +1,143 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">主页</a>
+    &rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+<h1>{{ title }}</h1>
+
+<!-- 数据库状态 -->
+<div class="module" style="margin-bottom: 20px;">
+    <h2>数据库状态</h2>
+    <table style="width: 100%;">
+        <thead>
+            <tr>
+                <th style="width: 200px; text-align: left; padding: 10px; background-color: #f8f8f8;">项目</th>
+                <th style="text-align: left; padding: 10px; background-color: #f8f8f8;">值</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;"><strong>状态</strong></td>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;">
+                    {% if db_status.status == 'ok' %}
+                        <span style="color: #28a745; font-weight: bold;">✓ 正常</span>
+                    {% else %}
+                        <span style="color: #dc3545; font-weight: bold;">✗ 异常</span>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;"><strong>数据库类型</strong></td>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;">{{ db_status.vendor|upper }}</td>
+            </tr>
+            <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;"><strong>数据库版本</strong></td>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;">{{ db_status.version }}</td>
+            </tr>
+            <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;"><strong>响应时间</strong></td>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;">
+                    {% if db_status.latency_ms %}
+                        {{ db_status.latency_ms }} ms
+                        {% if db_status.latency_ms < 10 %}
+                            <span style="color: #28a745;">(优秀)</span>
+                        {% elif db_status.latency_ms < 50 %}
+                            <span style="color: #ffc107;">(良好)</span>
+                        {% else %}
+                            <span style="color: #dc3545;">(较慢)</span>
+                        {% endif %}
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+            </tr>
+            {% if db_status.status == 'error' %}
+            <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;"><strong>错误信息</strong></td>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd; color: #dc3545;">
+                    {{ db_status.error }}
+                </td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+
+<!-- 数据统计 -->
+<div class="module" style="margin-bottom: 20px;">
+    <h2>数据统计</h2>
+    <table style="width: 100%;">
+        <thead>
+            <tr>
+                <th style="width: 200px; text-align: left; padding: 10px; background-color: #f8f8f8;">指标</th>
+                <th style="text-align: left; padding: 10px; background-color: #f8f8f8;">数量</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;"><strong>AgentCard 总数</strong></td>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;">{{ stats.agentcard_total }} 个</td>
+            </tr>
+            <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;"><strong>AgentCard 活跃数</strong></td>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;">
+                    {{ stats.agentcard_active }} 个
+                    {% if stats.agentcard_total > 0 %}
+                        <span style="color: #6c757d;">
+                            ({{ stats.agentcard_active|floatformat:0 }}/{{ stats.agentcard_total }})
+                        </span>
+                    {% endif %}
+                </td>
+            </tr>
+            <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;"><strong>Namespace 总数</strong></td>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;">{{ stats.namespace_count }} 个</td>
+            </tr>
+            <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;"><strong>Namespace 活跃数</strong></td>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;">
+                    {{ stats.namespace_active }} 个
+                </td>
+            </tr>
+            <tr>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;"><strong>Schema 定义数（活跃）</strong></td>
+                <td style="padding: 10px; border-bottom: 1px solid #ddd;">{{ stats.schema_count }} 个</td>
+            </tr>
+        </tbody>
+    </table>
+</div>
+
+<!-- 最近错误日志 -->
+<div class="module">
+    <h2>最近错误日志 (最近 50 条)</h2>
+    <div style="background: #f8f9fa; padding: 15px; border-radius: 4px;">
+        <pre style="max-height: 400px; overflow-y: auto; background: #ffffff; padding: 15px; font-size: 12px; font-family: 'Consolas', 'Monaco', 'Courier New', monospace; border: 1px solid #dee2e6; border-radius: 4px; margin: 0;">{% for error in recent_errors %}{{ error }}
+{% endfor %}</pre>
+    </div>
+    <p style="margin-top: 10px; color: #6c757d; font-size: 13px;">
+        <strong>说明：</strong>日志文件位于 <code>logs/error.log</code>，可通过 Docker 卷访问完整日志。
+    </p>
+</div>
+
+<!-- 页脚信息 -->
+<div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
+    <p style="color: #6c757d; font-size: 14px;">
+        <strong>检查时间：</strong>{{ check_time|date:"Y-m-d H:i:s" }}
+    </p>
+    <p style="color: #6c757d; font-size: 14px;">
+        <strong>健康检查端点：</strong>
+        <a href="/health/" target="_blank">/health/</a> |
+        <a href="/health/ready/" target="_blank">/health/ready/</a> |
+        <a href="/health/db/" target="_blank">/health/db/</a>
+    </p>
+</div>
+
+{% endblock %}
