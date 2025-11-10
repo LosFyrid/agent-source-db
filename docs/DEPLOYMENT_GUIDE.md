@@ -28,7 +28,7 @@ Caddy (Web服务器) → Gunicorn (WSGI) → Django (应用)
 - Git
 - Docker & Docker Compose
 - 防火墙开放端口:
-  - **生产环境**: 80 (HTTP), 443 (HTTPS，有域名时)
+  - **生产环境**: 8000 (无域名) 或 80/443 (有域名)
   - **测试环境**: 8001
 
 ---
@@ -68,9 +68,29 @@ DATABASE_URL=postgres://produser:<刚才的密码>@db:5432/agentcard_prod
 ```
 
 **Caddy 配置说明**:
-- **无域名** (内网/IP访问): `CADDY_ADDRESS=:80`
-- **有域名** (自动HTTPS): `CADDY_ADDRESS=yourdomain.com`
-  - 前提: DNS 指向服务器 IP，防火墙开放 80/443，服务器可被公网访问
+- **无域名** (内网/IP访问，默认): `CADDY_ADDRESS=:80`, `CADDY_HTTP_PORT=8000`
+  - 访问地址: `http://SERVER_IP:8000/admin/`
+  - 端口可自定义（修改 `CADDY_HTTP_PORT` 环境变量）
+  - 无需修改 docker-compose.prod.yml
+
+- **有域名** (自动HTTPS):
+  1. 设置环境变量:
+     ```ini
+     CADDY_ADDRESS=yourdomain.com
+     CADDY_HTTP_PORT=80
+     CADDY_HTTPS_PORT=443
+     ```
+  2. **取消注释 docker-compose.prod.yml 的 443 端口映射**:
+     ```yaml
+     ports:
+       - "${CADDY_HTTP_PORT:-8000}:80"
+       - "${CADDY_HTTPS_PORT:-443}:443"   # 取消此行注释
+     ```
+  3. 前提条件:
+     - DNS 指向服务器 IP
+     - 防火墙开放 80/443
+     - 服务器可被公网访问（Let's Encrypt 需要 80 端口验证）
+  4. 访问地址: `https://yourdomain.com/admin/`
 
 **测试环境同理**（复制 `.env.test.example` 为 `.env.test`）
 
@@ -107,10 +127,10 @@ docker-compose -f docker-compose.prod.yml exec web python manage.py createsuperu
 
 | 环境 | 管理后台 | API |
 |------|---------|-----|
-| 生产 | `http://SERVER_IP/admin/` | `http://SERVER_IP/api/` |
+| 生产 | `http://SERVER_IP:8000/admin/` | `http://SERVER_IP:8000/api/` |
 | 测试 | `http://SERVER_IP:8001/admin/` | `http://SERVER_IP:8001/api/` |
 
-**注意**: 有域名时使用 `https://yourdomain.com/admin/`（自动 HTTPS）
+**注意**: 有域名时使用 `https://yourdomain.com/admin/`（需修改端口映射为 80/443）
 
 ---
 
@@ -211,7 +231,7 @@ tail -f logs/backup.log
 |------|---------|------|--------|------|
 | 开发 | feature/*, develop | localhost:8000 | 本地测试数据 | 开发者本地开发 |
 | 测试 | develop | 8001 | agentcard_test | 验证代码更新 |
-| 生产 | main | 80/443 | agentcard_prod | 正式使用 |
+| 生产 | main | 8000 (无域名) 或 80/443 (有域名) | agentcard_prod | 正式使用 |
 
 **部署流程**: 开发者本地开发 → Git Push → 测试环境验证 → 生产环境部署
 

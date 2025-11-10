@@ -25,7 +25,7 @@
 |------|------|------|--------|---------|
 | **开发环境** | 开发者本地开发 | localhost:8000 | 本地测试数据 | feature/*, develop |
 | **测试环境** | 验证代码更新 | 服务器IP:8001 | 独立测试数据 | develop |
-| **生产环境** | 正式使用 | 80/443 | 生产数据 | main |
+| **生产环境** | 正式使用 | 8000 (无域名) 或 80/443 (有域名) | 生产数据 | main |
 
 ### 架构说明
 
@@ -69,9 +69,13 @@ Django (应用框架)
 
 ```bash
 # 开放必要端口
-sudo ufw allow 80/tcp   # 生产环境 HTTP
-sudo ufw allow 443/tcp  # 生产环境 HTTPS (有域名时)
+sudo ufw allow 8000/tcp # 生产环境（无域名）
 sudo ufw allow 8001/tcp # 测试环境
+
+# 有域名时还需要开放（Let's Encrypt 证书申请需要）
+# sudo ufw allow 80/tcp
+# sudo ufw allow 443/tcp
+
 sudo ufw enable
 ```
 
@@ -394,6 +398,8 @@ docker-compose -f docker-compose.prod.yml restart     # 重启
 | `DJANGO_DEBUG` | 调试模式（生产必须False） | `True`/`False` |
 | `DJANGO_ALLOWED_HOSTS` | 允许的主机名 | `192.168.1.100,localhost` |
 | `CADDY_ADDRESS` | Caddy 监听地址 | `:80` 或 `yourdomain.com` |
+| `CADDY_HTTP_PORT` | Caddy HTTP 端口（宿主机） | `8000`（生产默认）, `8001`（测试默认） |
+| `CADDY_HTTPS_PORT` | Caddy HTTPS 端口（宿主机） | `443`（有域名时） |
 | `POSTGRES_DB` | 数据库名 | `agentcard_prod` |
 | `POSTGRES_USER` | 数据库用户 | `produser` |
 | `POSTGRES_PASSWORD` | 数据库密码 | 强密码 |
@@ -435,32 +441,64 @@ docker-compose -f docker-compose.prod.yml restart caddy
 
 #### 无域名部署（IP 访问）
 
-适用于内网服务器或无公网域名的场景：
+适用于内网服务器或无公网域名的场景（**默认配置**）：
 
 ```bash
 # .env.prod
 CADDY_ADDRESS=:80
+CADDY_HTTP_PORT=8000  # 宿主机端口，可自定义
 DJANGO_ALLOWED_HOSTS=192.168.1.100,localhost,127.0.0.1
 ```
 
-访问地址: `http://192.168.1.100/admin/`
+**docker-compose.prod.yml 端口配置**（已使用环境变量）：
+```yaml
+caddy:
+  ports:
+    - "${CADDY_HTTP_PORT:-8000}:80"  # 宿主机端口 → 容器 80
+```
+
+访问地址: `http://192.168.1.100:8000/admin/`
+
+**优势**:
+- 无需 root 权限，避免 80 端口 permission denied 问题
+- 端口可灵活配置（修改 `CADDY_HTTP_PORT` 环境变量）
 
 #### 有域名部署（自动 HTTPS）
 
 适用于有公网域名的服务器：
 
+**步骤 1: 修改环境变量**
 ```bash
 # .env.prod
 CADDY_ADDRESS=agentcard.example.com
+CADDY_HTTP_PORT=80       # Let's Encrypt 验证需要
+CADDY_HTTPS_PORT=443     # HTTPS 服务端口
 DJANGO_ALLOWED_HOSTS=agentcard.example.com,localhost
+```
+
+**步骤 2: 取消注释 docker-compose.prod.yml 的 443 端口**
+```yaml
+caddy:
+  ports:
+    - "${CADDY_HTTP_PORT:-8000}:80"
+    - "${CADDY_HTTPS_PORT:-443}:443"   # 取消此行注释
+```
+
+**步骤 3: 重新部署**
+```bash
+docker-compose -f docker-compose.prod.yml up -d --build
 ```
 
 **前提条件**:
 - ✅ 域名 DNS 已正确指向服务器 IP
 - ✅ 服务器防火墙开放 80 和 443 端口
-- ✅ 服务器能被公网访问（Let's Encrypt 需要验证）
+- ✅ 服务器能被公网访问（Let's Encrypt 需要验证 80 端口）
+- ✅ 停止其他占用 80 端口的服务（nginx/apache）
 
 访问地址: `https://agentcard.example.com/admin/` (自动 HTTPS)
+
+**为什么必须用 80/443？**
+Let's Encrypt 使用 HTTP-01 Challenge 验证域名所有权，验证服务器会直接访问 `http://yourdomain.com:80/.well-known/acme-challenge/xxx`，80 端口是 ACME 协议规定，无法更改。
 
 **验证 HTTPS 证书**:
 ```bash
@@ -491,6 +529,22 @@ curl -I http://YOUR_SERVER_IP/static/admin/css/base.css
 ```
 
 ### 常见问题
+
+**Q: 80 端口 permission denied 错误**
+```bash
+# 原因：80/443 是特权端口，需要特殊权限
+
+# 解决方案 1: 使用非特权端口（推荐无域名场景）
+# 默认配置已使用 8000 端口，无需修改
+
+# 解决方案 2: 停止占用 80 端口的服务（有域名场景）
+sudo systemctl stop nginx apache2
+sudo systemctl disable nginx apache2
+
+# 重启 Docker 服务
+sudo systemctl restart docker
+docker-compose -f docker-compose.prod.yml up -d
+```
 
 **Q: Caddy 无法启动，报端口占用错误**
 ```bash
