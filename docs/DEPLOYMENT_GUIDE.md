@@ -329,6 +329,42 @@ DJANGO_ALLOWED_HOSTS=YOUR_SERVER_IP,localhost,web
 #                                              ↑必须包含 web
 ```
 
+### 密码认证失败
+
+**症状**: `FATAL: password authentication failed for user "produser"`
+
+**原因**:
+1. `.env.prod` 中两处密码不一致
+2. Docker Volume 中存在旧数据库（使用旧密码）
+3. 密码包含特殊字符未 URL 编码
+
+**修复（首次部署）**:
+```bash
+# 1. 完全清空重新部署
+docker-compose -f docker-compose.prod.yml down -v
+
+# 2. 检查配置文件密码一致性
+cat .env.prod | grep -E "POSTGRES_PASSWORD|DATABASE_URL"
+# 两处密码必须完全一致
+
+# 3. 重新部署
+./scripts/deploy.sh prod
+```
+
+**密码特殊字符处理**:
+```bash
+# 如果密码包含特殊字符，DATABASE_URL 中需要 URL 编码：
+# @ → %40, # → %23, $ → %24, / → %2F, : → %3A
+
+# 例如：密码是 my@pass#123
+POSTGRES_PASSWORD=my@pass#123                    # 这里不编码
+DATABASE_URL=postgres://produser:my%40pass%23123@db:5432/agentcard_prod
+#                                ↑编码后的密码
+
+# 推荐：使用不含特殊字符的密码
+openssl rand -base64 32 | tr -d '/+='
+```
+
 ### 服务无法启动
 
 ```bash

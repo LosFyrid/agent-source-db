@@ -15,13 +15,15 @@
 
     # 静态文件服务 (直接从 volume 读取，性能最优)
     handle /static/* {
-        root * /app/staticfiles
+        root * /app
+        uri strip_prefix /static
         file_server
     }
 
     # 媒体文件服务 (用户上传的文件)
     handle /media/* {
-        root * /app/media
+        root * /app
+        uri strip_prefix /media
         file_server
     }
 
