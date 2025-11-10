@@ -203,7 +203,7 @@ class SchemaRegistry(models.Model):
                 'required': field.is_required,
                 'description': field.description,
                 'default': field.default_value,
-                'constraints': field.get_constraints(),
+                'constraints': field.get_field_constraints(),
             }
             for field in self.fields.all().order_by('order', 'field_name')
         ]
@@ -277,39 +277,65 @@ class SchemaField(models.Model):
     default_value = models.JSONField(
         null=True,
         blank=True,
-        help_text="默认值（JSON 格式）"
+        help_text=(
+            "【仅供文档参考，不会自动应用】"
+            "用于在 JSON Schema 中显示推荐的默认值，但验证时不会自动填充。"
+            "示例：5 或 \"ACTIVE\" 或 [\"tag1\"]"
+        )
     )
 
     # 约束条件（可选）
     min_length = models.IntegerField(
         null=True,
         blank=True,
-        help_text="最小长度（仅 string 类型）"
+        help_text=(
+            "【仅适用于 string 类型】\n"
+            "字符串的最小长度限制。其他类型请勿填写，否则保存时会报错。"
+        )
     )
     max_length = models.IntegerField(
         null=True,
         blank=True,
-        help_text="最大长度（仅 string 类型）"
+        help_text=(
+            "【仅适用于 string 类型】\n"
+            "字符串的最大长度限制。其他类型请勿填写，否则保存时会报错。"
+        )
     )
     min_value = models.FloatField(
         null=True,
         blank=True,
-        help_text="最小值（仅 integer/number 类型）"
+        help_text=(
+            "【仅适用于 integer/number 类型】\n"
+            "数值的最小值限制。其他类型请勿填写，否则保存时会报错。"
+        )
     )
     max_value = models.FloatField(
         null=True,
         blank=True,
-        help_text="最大值（仅 integer/number 类型）"
+        help_text=(
+            "【仅适用于 integer/number 类型】\n"
+            "数值的最大值限制。其他类型请勿填写，否则保存时会报错。"
+        )
     )
     enum_choices = models.JSONField(
         null=True,
         blank=True,
-        help_text="枚举值列表（仅 enum 类型），如 ['OPERATIONAL', 'MAINTENANCE', 'OFFLINE']"
+        help_text=(
+            "【仅适用于 enum 类型，此类型必填此字段】\n"
+            "枚举值列表（JSON 数组格式）。\n"
+            "示例：[\"OPERATIONAL\", \"MAINTENANCE\", \"OFFLINE\"]\n"
+            "其他类型请勿填写，否则保存时会报错。"
+        )
     )
     pattern = models.CharField(
         max_length=512,
         blank=True,
-        help_text="正则表达式模式（仅 string 类型），如 '^[A-Z]{2,4}-\\d{3}$'"
+        help_text=(
+            "【仅适用于 string 类型】\n"
+            "正则表达式模式（用于验证字符串格式）。\n"
+            "示例：'^[A-Z]{2,4}-\\d{3}$'（大写字母2-4位 + 连字符 + 3位数字）\n"
+            "其他类型请勿填写，否则保存时会报错。"
+        )
     )
 
     # 显示顺序
@@ -474,9 +500,12 @@ class SchemaField(models.Model):
 
         return True, ""
 
-    def get_constraints(self) -> dict:
+    def get_field_constraints(self) -> dict:
         """
         获取约束条件（用于 API 响应）
+
+        注意：此方法已重命名为 get_field_constraints() 以避免与 Django 的
+        Model.get_constraints() 方法冲突。
         """
         constraints = {}
 
@@ -1375,8 +1404,13 @@ class AgentExtension(models.Model):
 
     uri = models.URLField(
         max_length=512,
+        blank=True,
         help_text=(
+            "【推荐留空自动填充】\n"
             "扩展的唯一标识 URI（A2A 协议要求）。\n"
+            "• 如果选择了上方的 Schema，请留空此字段，系统会自动从 Schema 复制 URI\n"
+            "• 如果没有选择 Schema（手动扩展），需要手动填写完整的 URI\n"
+            "\n"
             "示例：\n"
             "• Data-only: https://your-org.com/extensions/physical-asset/v1\n"
             "• Method: https://a2a.org/extensions/task-history/v1\n"
@@ -1448,19 +1482,19 @@ class AgentExtension(models.Model):
     def clean(self):
         super().clean()
 
-        # 如果关联了 schema，验证 params 数据
-        if self.schema:
-            is_valid, error_msg = self.schema.validate_extension_data(self.params)
-            if not is_valid:
-                raise ValidationError({
-                    'params': f"数据不符合 Schema '{self.schema}' 的定义:\n{error_msg}"
-                })
+        # 注意：不在这里验证 params 数据，因为：
+        # 1. Django Admin 使用 AgentExtensionForm.clean() 来验证 params（在那里使用 cleaned_data）
+        # 2. 在这里验证会使用 self.params，但在 form 保存时 self.params 可能还是旧值
+        # 3. 这会导致使用旧值验证，产生错误的错误消息
+        #
+        # 对于非 Django Admin 的使用场景（如 API 直接创建），应该在调用方进行验证
 
-            # 自动同步 uri（确保一致性）
-            if self.uri != self.schema.schema_uri:
-                raise ValidationError({
-                    'uri': f"URI 不匹配：字段值为 '{self.uri}'，但关联的 Schema URI 为 '{self.schema.schema_uri}'"
-                })
+        # 自动同步 uri（确保一致性）
+        # 注意：如果 uri 为空，会在 save() 时自动填充，所以这里先跳过验证
+        if self.schema and self.uri and self.uri != self.schema.schema_uri:
+            raise ValidationError({
+                'uri': f"URI 不匹配：字段值为 '{self.uri}'，但关联的 Schema URI 为 '{self.schema.schema_uri}'"
+            })
 
     def save(self, *args, **kwargs):
         # 自动从 schema 填充 uri（如果为空）
@@ -1471,5 +1505,14 @@ class AgentExtension(models.Model):
         if self.schema and not self.description:
             self.description = self.schema.description or f"{self.schema.schema_type} {self.schema.version}"
 
-        self.full_clean()
+        # 最终验证：URI 不能为空（A2A 协议要求）
+        if not self.uri:
+            raise ValidationError({
+                'uri': 'URI 是必填字段。请选择一个 Schema（系统会自动填充 URI）或手动输入 URI。'
+            })
+
+        # 注意：不在这里调用 full_clean()，因为：
+        # 1. Django Admin 的表单已经在保存前验证过（调用了 form.full_clean()）
+        # 2. AgentExtensionForm.clean() 已经验证了 params 数据
+        # 3. 在这里再次调用会导致双重验证和错误的错误消息（因为此时 self.params 可能还是旧值）
         super().save(*args, **kwargs)

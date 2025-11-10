@@ -56,7 +56,7 @@ class SchemaFieldSerializer(serializers.ModelSerializer):
 
     def get_constraints(self, obj):
         """返回约束条件（格式化）"""
-        return obj.get_constraints()
+        return obj.get_field_constraints()
 
 
 class SchemaRegistryListSerializer(serializers.ModelSerializer):

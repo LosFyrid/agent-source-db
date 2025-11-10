@@ -122,11 +122,23 @@ class SchemaRegistryAdmin(admin.ModelAdmin):
     field_count.short_description = '字段数量'
 
     def usage_count(self, obj):
+        """显示有多少个 AgentCard 使用了此 Schema"""
         count = obj.agent_extensions.count()
 
         if count > 0:
-            url = reverse('admin:documents_agentextension_changelist') + f'?schema__id__exact={obj.id}'
-            return format_html('<a href="{}" title="查看使用此Schema的扩展">{} 个扩展</a>', url, count)
+            # 获取使用此 schema 的 AgentCard ID 列表
+            agentcard_ids = obj.agent_extensions.values_list('agent_card_id', flat=True).distinct()
+            agentcard_count = agentcard_ids.count()
+
+            # 链接到使用此 schema 的 AgentCard 列表
+            if agentcard_count > 0:
+                # 构建过滤 URL，显示包含使用此 schema 的扩展的 AgentCard
+                url = reverse('admin:documents_agentcard_changelist')
+                return format_html(
+                    '<a href="{}" title="被 {} 个 AgentCard 使用（共 {} 次）">{} 个 AgentCard 使用</a>',
+                    url, agentcard_count, count, agentcard_count
+                )
+            return f'{count} 个扩展'
         return '0'
     usage_count.short_description = '使用情况'
 
@@ -227,7 +239,7 @@ class AgentExtensionForm(forms.ModelForm):
         fields = '__all__'
 
     def clean(self):
-        """触发模型的 clean() 方法进行验证"""
+        """自动填充 URI 并验证 params 数据"""
         cleaned_data = super().clean()
 
         # 自动填充 URI（如果选择了 schema 但 URI 为空）
@@ -236,18 +248,15 @@ class AgentExtensionForm(forms.ModelForm):
 
         if schema and not uri:
             cleaned_data['uri'] = schema.schema_uri
-            self.instance.uri = schema.schema_uri
 
-        # 调用模型的 clean() 方法进行 params 验证
-        # 需要先设置字段值到 instance，因为 model.clean() 需要访问这些值
-        for field, value in cleaned_data.items():
-            setattr(self.instance, field, value)
-
-        try:
-            self.instance.clean()
-        except forms.ValidationError as e:
-            # 将模型验证错误传递到表单
-            raise e
+        # 验证 params 数据（如果关联了 schema）
+        if schema:
+            params = cleaned_data.get('params', {})
+            is_valid, error_msg = schema.validate_extension_data(params)
+            if not is_valid:
+                raise forms.ValidationError({
+                    'params': f"数据不符合 Schema '{schema}' 的定义:\n{error_msg}"
+                })
 
         return cleaned_data
 
