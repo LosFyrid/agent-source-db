@@ -38,7 +38,7 @@ Caddy (Web服务器) → Gunicorn (WSGI) → Django (应用)
 ### 1. 克隆代码
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/agent-source-db.git
+git clone https://github.com/LosFyrid/agent-source-db.git
 cd agent-source-db
 ```
 
