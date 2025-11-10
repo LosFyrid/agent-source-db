@@ -30,6 +30,19 @@ SECRET_KEY = env('DJANGO_SECRET_KEY')
 DEBUG = env.bool('DJANGO_DEBUG')
 ALLOWED_HOSTS = env.list('DJANGO_ALLOWED_HOSTS')
 
+# CSRF 配置（反向代理需要）
+# 从 ALLOWED_HOSTS 自动生成 CSRF_TRUSTED_ORIGINS
+CSRF_TRUSTED_ORIGINS = []
+for host in ALLOWED_HOSTS:
+    if host and host != '*' and host != 'web':
+        # 添加 http 和 https 版本
+        if not host.startswith('http'):
+            CSRF_TRUSTED_ORIGINS.append(f'http://{host}')
+            CSRF_TRUSTED_ORIGINS.append(f'https://{host}')
+            # 添加带端口的版本（用于非标准端口访问）
+            CSRF_TRUSTED_ORIGINS.append(f'http://{host}:8000')
+            CSRF_TRUSTED_ORIGINS.append(f'http://{host}:8001')
+
 
 # Application definition
 
