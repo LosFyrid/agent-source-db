@@ -2,6 +2,24 @@
 # 使用方法: docker-compose -f docker-compose.test.yml up -d
 
 services:
+  # Caddy - Web 服务器（反向代理 + 静态文件服务）
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "8001:80"    # 测试环境使用 8001 端口（避免与生产环境冲突）
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - static_volume_test:/app/staticfiles:ro
+      - media_volume_test:/app/media:ro
+      - caddy_data_test:/data
+      - caddy_config_test:/config
+      - caddy_logs_test:/var/log/caddy
+    env_file:
+      - .env.test
+    depends_on:
+      - web
+    restart: unless-stopped
+
   web:
     build: .
     # 测试环境也使用 Gunicorn（模拟生产环境）
@@ -10,8 +28,9 @@ services:
       - static_volume_test:/app/staticfiles
       - media_volume_test:/app/media
       - logs_volume_test:/app/logs  # 日志文件持久化
-    ports:
-      - "8001:8000"  # 测试环境使用 8001 端口（避免与生产环境冲突）
+    # 端口不对外暴露，仅供 Caddy 内部访问
+    expose:
+      - "8000"
     env_file:
       - .env.test
     environment:
@@ -40,3 +59,6 @@ volumes:
   static_volume_test:  # 测试静态文件
   media_volume_test:   # 测试上传文件
   logs_volume_test:    # 测试日志文件
+  caddy_data_test:     # Caddy 数据（测试环境）
+  caddy_config_test:   # Caddy 配置缓存（测试环境）
+  caddy_logs_test:     # Caddy 日志（测试环境）

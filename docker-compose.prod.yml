@@ -2,6 +2,25 @@
 # 使用方法: docker-compose -f docker-compose.prod.yml up -d
 
 services:
+  # Caddy - Web 服务器（反向代理 + 静态文件服务）
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"      # HTTP
+      - "443:443"    # HTTPS (有域名时自动启用)
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - static_volume:/app/staticfiles:ro  # 只读访问静态文件
+      - media_volume:/app/media:ro         # 只读访问媒体文件
+      - caddy_data:/data                   # Caddy 数据（HTTPS 证书等）
+      - caddy_config:/config               # Caddy 配置缓存
+      - caddy_logs:/var/log/caddy          # Caddy 日志
+    env_file:
+      - .env.prod
+    depends_on:
+      - web
+    restart: unless-stopped
+
   web:
     build: .
     # 生产环境使用 Gunicorn (高性能 WSGI 服务器)
@@ -12,8 +31,9 @@ services:
       - static_volume:/app/staticfiles
       - media_volume:/app/media
       - logs_volume:/app/logs  # 日志文件持久化
-    ports:
-      - "8000:8000"
+    # 端口不对外暴露，仅供 Caddy 内部访问
+    expose:
+      - "8000"
     env_file:
       - .env.prod
     environment:
@@ -45,3 +65,6 @@ volumes:
   static_volume:       # 静态文件（CSS/JS）
   media_volume:        # 用户上传文件
   logs_volume:         # 日志文件（持久化）
+  caddy_data:          # Caddy 数据（HTTPS 证书等）
+  caddy_config:        # Caddy 配置缓存
+  caddy_logs:          # Caddy 访问日志

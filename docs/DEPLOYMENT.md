@@ -25,7 +25,31 @@
 |------|------|------|--------|---------|
 | **开发环境** | 开发者本地开发 | localhost:8000 | 本地测试数据 | feature/*, develop |
 | **测试环境** | 验证代码更新 | 服务器IP:8001 | 独立测试数据 | develop |
-| **生产环境** | 正式使用 | 服务器IP:8000 | 生产数据 | main |
+| **生产环境** | 正式使用 | 80/443 | 生产数据 | main |
+
+### 架构说明
+
+**开发环境**:
+```
+Django 开发服务器 (直接运行)
+```
+
+**测试/生产环境**:
+```
+Caddy (Web服务器)
+  ↓ 静态文件 (/static/*) → 直接服务
+  ↓ 动态请求 → 反向代理
+Gunicorn (WSGI服务器)
+  ↓
+Django (应用框架)
+```
+
+**Caddy 功能**:
+- 静态文件服务 (CSS/JS/图片)
+- 反向代理到 Gunicorn
+- 自动 HTTPS (有域名时)
+- Gzip 压缩
+- 访问日志
 
 ### 工作流程
 
@@ -45,8 +69,9 @@
 
 ```bash
 # 开放必要端口
-sudo ufw allow 8000/tcp  # 生产环境
-sudo ufw allow 8001/tcp  # 测试环境
+sudo ufw allow 80/tcp   # 生产环境 HTTP
+sudo ufw allow 443/tcp  # 生产环境 HTTPS (有域名时)
+sudo ufw allow 8001/tcp # 测试环境
 sudo ufw enable
 ```
 
@@ -368,6 +393,132 @@ docker-compose -f docker-compose.prod.yml restart     # 重启
 | `DJANGO_SECRET_KEY` | Django 密钥（必须保密） | 随机50字符 |
 | `DJANGO_DEBUG` | 调试模式（生产必须False） | `True`/`False` |
 | `DJANGO_ALLOWED_HOSTS` | 允许的主机名 | `192.168.1.100,localhost` |
+| `CADDY_ADDRESS` | Caddy 监听地址 | `:80` 或 `yourdomain.com` |
 | `POSTGRES_DB` | 数据库名 | `agentcard_prod` |
 | `POSTGRES_USER` | 数据库用户 | `produser` |
 | `POSTGRES_PASSWORD` | 数据库密码 | 强密码 |
+
+---
+
+## 🔧 故障排查
+
+### Admin 后台无样式（只有文字）
+
+**症状**: 访问 `/admin/` 只显示纯文本，无 CSS 样式
+
+**原因**: 静态文件未正确服务（Caddy 配置问题）
+
+**排查步骤**:
+
+```bash
+# 1. 确认静态文件已收集
+docker-compose -f docker-compose.prod.yml exec web ls -la /app/staticfiles/admin/
+# 应该看到 css/, js/, img/ 等目录
+
+# 2. 确认 Caddy 能访问静态文件 volume
+docker-compose -f docker-compose.prod.yml exec caddy ls -la /app/staticfiles/admin/
+# 应该看到相同的目录
+
+# 3. 测试静态文件是否可访问
+curl http://YOUR_SERVER_IP/static/admin/css/base.css
+# 应该返回 CSS 内容（不是 404）
+
+# 4. 查看 Caddy 日志
+docker-compose -f docker-compose.prod.yml logs caddy | grep -i error
+
+# 5. 如果静态文件不存在，重新收集
+docker-compose -f docker-compose.prod.yml exec web python manage.py collectstatic --noinput --clear
+docker-compose -f docker-compose.prod.yml restart caddy
+```
+
+### Caddy 配置详解
+
+#### 无域名部署（IP 访问）
+
+适用于内网服务器或无公网域名的场景：
+
+```bash
+# .env.prod
+CADDY_ADDRESS=:80
+DJANGO_ALLOWED_HOSTS=192.168.1.100,localhost,127.0.0.1
+```
+
+访问地址: `http://192.168.1.100/admin/`
+
+#### 有域名部署（自动 HTTPS）
+
+适用于有公网域名的服务器：
+
+```bash
+# .env.prod
+CADDY_ADDRESS=agentcard.example.com
+DJANGO_ALLOWED_HOSTS=agentcard.example.com,localhost
+```
+
+**前提条件**:
+- ✅ 域名 DNS 已正确指向服务器 IP
+- ✅ 服务器防火墙开放 80 和 443 端口
+- ✅ 服务器能被公网访问（Let's Encrypt 需要验证）
+
+访问地址: `https://agentcard.example.com/admin/` (自动 HTTPS)
+
+**验证 HTTPS 证书**:
+```bash
+# 查看证书状态
+docker-compose -f docker-compose.prod.yml exec caddy caddy list-certificates
+
+# 查看 Caddy 日志（HTTPS 申请过程）
+docker-compose -f docker-compose.prod.yml logs caddy | grep -i acme
+```
+
+### Caddy 健康检查
+
+```bash
+# 1. 检查 Caddy 服务状态
+docker-compose -f docker-compose.prod.yml ps caddy
+# 状态应该是 "Up"
+
+# 2. 测试反向代理是否正常
+curl -I http://YOUR_SERVER_IP/admin/login/
+# 应该返回 "HTTP/1.1 200 OK"
+
+# 3. 查看 Caddy 访问日志
+docker-compose -f docker-compose.prod.yml exec caddy cat /var/log/caddy/access.log
+
+# 4. 测试静态文件路径
+curl -I http://YOUR_SERVER_IP/static/admin/css/base.css
+# 应该返回 "HTTP/1.1 200 OK"
+```
+
+### 常见问题
+
+**Q: Caddy 无法启动，报端口占用错误**
+```bash
+# 检查端口占用
+sudo netstat -tlnp | grep :80
+
+# 停止占用端口的服务（如 nginx）
+sudo systemctl stop nginx
+sudo systemctl disable nginx
+```
+
+**Q: 有域名但 HTTPS 证书申请失败**
+```bash
+# 查看详细错误
+docker-compose -f docker-compose.prod.yml logs caddy
+
+# 常见原因：
+# 1. DNS 未正确指向服务器 IP
+# 2. 防火墙未开放 80/443 端口
+# 3. 服务器无法被公网访问（如在内网）
+```
+
+**Q: 更新代码后静态文件未更新**
+```bash
+# 清除旧的静态文件并重新收集
+docker-compose -f docker-compose.prod.yml exec web python manage.py collectstatic --noinput --clear
+
+# 重启 Caddy（清除缓存）
+docker-compose -f docker-compose.prod.yml restart caddy
+```
+

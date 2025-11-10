@@ -1,0 +1,60 @@
+# Caddy 配置文件
+# 用于生产/测试环境的静态文件服务和反向代理
+
+# 监听地址配置 (通过环境变量 CADDY_ADDRESS 配置)
+# 无域名场景 (IP访问): CADDY_ADDRESS=:80
+# 有域名场景 (自动HTTPS): CADDY_ADDRESS=yourdomain.com
+# 默认: :80 (适合开发/无域名服务器)
+{$CADDY_ADDRESS::80} {
+    # 日志配置
+    log {
+        output file /var/log/caddy/access.log
+        format json
+        level INFO
+    }
+
+    # 静态文件服务 (直接从 volume 读取，性能最优)
+    handle /static/* {
+        root * /app/staticfiles
+        file_server
+    }
+
+    # 媒体文件服务 (用户上传的文件)
+    handle /media/* {
+        root * /app/media
+        file_server
+    }
+
+    # 反向代理到 Gunicorn (动态请求)
+    handle {
+        reverse_proxy web:8000 {
+            # 健康检查
+            health_uri /admin/login/
+            health_interval 10s
+            health_timeout 5s
+
+            # 请求头配置
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+            header_up Host {host}
+        }
+    }
+
+    # 启用 gzip 压缩
+    encode gzip zstd
+
+    # 安全头
+    header {
+        # 防止 XSS 攻击
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        X-XSS-Protection "1; mode=block"
+
+        # HSTS (仅在 HTTPS 时)
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+
+        # 移除服务器信息
+        -Server
+    }
+}
