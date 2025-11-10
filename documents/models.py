@@ -1161,56 +1161,60 @@ class AgentCard(models.Model):
 
         return card
 
-    def to_agentcard_json(self, include_metadata: bool = False) -> dict:
+    def to_agentcard_json(self, include_metadata: bool = False, validate: bool = False) -> dict:
         """
-        导出为标准 AgentCard JSON 格式（用于 API 响应）
+        导出为标准 AgentCard JSON 格式（用于 API 响应和预览）
 
         Args:
             include_metadata: 是否包含内部元数据（namespace, created_at 等）
+            validate: 是否严格验证 A2A 协议必填字段
+                     - False（默认）：预览模式，允许不完整数据
+                     - True：导出模式，严格验证所有必填字段
 
         Returns:
-            符合 A2A 协议的 AgentCard JSON 对象
+            符合 A2A 协议的 AgentCard JSON 对象（validate=False 时可能不完整）
 
         Raises:
-            ValidationError: 如果 AgentCard 不符合 A2A 协议必填字段要求
+            ValidationError: 如果 validate=True 且 AgentCard 不符合 A2A 协议必填字段要求
         """
         # ========================================
-        # 严格 A2A 协议验证（输出层）
+        # 严格 A2A 协议验证（仅在 validate=True 时）
         # ========================================
-        # 策略：在生成 JSON 之前，确保所有 A2A 协议必填字段都已填写
-        # 这与数据库层的宽松验证形成对比：
+        # 策略：
         # - 数据库层（clean）：允许渐进式录入，只验证格式
-        # - 输出层（to_agentcard_json）：严格验证必填字段，确保符合 A2A 协议
+        # - 预览层（validate=False）：显示当前数据状态，允许不完整
+        # - 导出层（validate=True）：严格验证必填字段，确保符合 A2A 协议
 
-        errors = {}
+        if validate:
+            errors = {}
 
-        # 1. 基本字段（字符串类型，不能为空）
-        if not self.name or not self.name.strip():
-            errors['name'] = "name 是 A2A 协议必填字段，不能为空"
-        if not self.description or not self.description.strip():
-            errors['description'] = "description 是 A2A 协议必填字段，不能为空"
-        if not self.url or not self.url.strip():
-            errors['url'] = "url 是 A2A 协议必填字段，不能为空"
+            # 1. 基本字段（字符串类型，不能为空）
+            if not self.name or not self.name.strip():
+                errors['name'] = "name 是 A2A 协议必填字段，不能为空"
+            if not self.description or not self.description.strip():
+                errors['description'] = "description 是 A2A 协议必填字段，不能为空"
+            if not self.url or not self.url.strip():
+                errors['url'] = "url 是 A2A 协议必填字段，不能为空"
 
-        # 2. defaultInputModes（必填，不能为空数组）
-        if not self.default_input_modes or len(self.default_input_modes) == 0:
-            errors['defaultInputModes'] = "defaultInputModes 是 A2A 协议必填字段，不能为空数组"
+            # 2. defaultInputModes（必填，不能为空数组）
+            if not self.default_input_modes or len(self.default_input_modes) == 0:
+                errors['defaultInputModes'] = "defaultInputModes 是 A2A 协议必填字段，不能为空数组"
 
-        # 3. defaultOutputModes（必填，不能为空数组）
-        if not self.default_output_modes or len(self.default_output_modes) == 0:
-            errors['defaultOutputModes'] = "defaultOutputModes 是 A2A 协议必填字段，不能为空数组"
+            # 3. defaultOutputModes（必填，不能为空数组）
+            if not self.default_output_modes or len(self.default_output_modes) == 0:
+                errors['defaultOutputModes'] = "defaultOutputModes 是 A2A 协议必填字段，不能为空数组"
 
-        # 4. skills（必填，不能为空数组）
-        if not self.skills or len(self.skills) == 0:
-            errors['skills'] = "skills 是 A2A 协议必填字段，不能为空数组"
+            # 4. skills（必填，不能为空数组）
+            if not self.skills or len(self.skills) == 0:
+                errors['skills'] = "skills 是 A2A 协议必填字段，不能为空数组"
 
-        # 如果有错误，抛出异常
-        if errors:
-            error_msg = "AgentCard 不符合 A2A 协议要求，无法生成 JSON 输出：\n"
-            for field, msg in errors.items():
-                error_msg += f"  - {field}: {msg}\n"
-            error_msg += "\n请先在 Django Admin 中补充完整所有必填字段。"
-            raise ValidationError(error_msg)
+            # 如果有错误，抛出异常
+            if errors:
+                error_msg = "AgentCard 不符合 A2A 协议要求，无法导出：\n"
+                for field, msg in errors.items():
+                    error_msg += f"  - {field}: {msg}\n"
+                error_msg += "\n请先在 Django Admin 中补充完整所有必填字段。"
+                raise ValidationError(error_msg)
 
         # ========================================
         # 构建 AgentCard JSON
@@ -1459,6 +1463,10 @@ class AgentExtension(models.Model):
                 })
 
     def save(self, *args, **kwargs):
+        # 自动从 schema 填充 uri（如果为空）
+        if self.schema and not self.uri:
+            self.uri = self.schema.schema_uri
+
         # 自动从 schema 填充 description（如果为空）
         if self.schema and not self.description:
             self.description = self.schema.description or f"{self.schema.schema_type} {self.schema.version}"

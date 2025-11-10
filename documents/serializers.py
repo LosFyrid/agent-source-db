@@ -261,13 +261,26 @@ class AgentCardStandardSerializer(serializers.Serializer):
 
     用于 /api/agentcards/{id}/standard-json/ 端点
     不基于 ModelSerializer，直接使用 to_agentcard_json() 方法
+
+    注意：此序列化器用于生产环境 API 导出，会进行严格的 A2A 协议验证。
+    如果 AgentCard 数据不完整，会返回 400 错误。
     """
     def to_representation(self, instance):
         """
         直接使用模型的 to_agentcard_json() 方法
+
+        使用 validate=True 确保导出的 AgentCard 符合 A2A 协议要求
         """
         include_metadata = self.context.get('include_metadata', False)
-        return instance.to_agentcard_json(include_metadata=include_metadata)
+        try:
+            return instance.to_agentcard_json(include_metadata=include_metadata, validate=True)
+        except Exception as e:
+            # 将 ValidationError 转换为 serializers.ValidationError
+            # 这样 DRF 会返回 400 Bad Request 而不是 500 Internal Server Error
+            raise serializers.ValidationError({
+                'detail': 'AgentCard 数据不完整，无法导出',
+                'errors': str(e)
+            })
 
 
 # ========================================

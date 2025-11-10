@@ -7,6 +7,7 @@ from django.contrib import admin
 from django.utils.html import format_html
 from django.db.models import Count
 from django.urls import reverse
+from django import forms
 import json
 
 from .models import Namespace, SchemaRegistry, SchemaField, AgentCard, AgentExtension
@@ -132,9 +133,12 @@ class SchemaRegistryAdmin(admin.ModelAdmin):
     def json_schema_preview(self, obj):
         """显示自动生成的 JSON Schema"""
         if obj.pk:
-            schema = obj.generate_json_schema()
-            json_str = json.dumps(schema, indent=2, ensure_ascii=False)
-            return format_html('<pre style="background:#f5f5f5;padding:10px;border-radius:5px;">{}</pre>', json_str)
+            try:
+                schema = obj.generate_json_schema()
+                json_str = json.dumps(schema, indent=2, ensure_ascii=False)
+                return format_html('<pre style="background:#f5f5f5;padding:10px;border-radius:5px;">{}</pre>', json_str)
+            except Exception as e:
+                return format_html('<div style="color:red;padding:10px;background:#ffe0e0;border-radius:5px;">生成失败：{}</div>', str(e))
         return "保存后生成"
     json_schema_preview.short_description = '自动生成的 JSON Schema'
 
@@ -212,6 +216,42 @@ class SchemaRegistryAdmin(admin.ModelAdmin):
 # AgentCard Admin
 # ========================================
 
+class AgentExtensionForm(forms.ModelForm):
+    """
+    自定义表单用于 AgentExtension
+    - 触发 params 验证（基于关联的 schema）
+    - 自动填充 URI（从 schema.schema_uri）
+    """
+    class Meta:
+        model = AgentExtension
+        fields = '__all__'
+
+    def clean(self):
+        """触发模型的 clean() 方法进行验证"""
+        cleaned_data = super().clean()
+
+        # 自动填充 URI（如果选择了 schema 但 URI 为空）
+        schema = cleaned_data.get('schema')
+        uri = cleaned_data.get('uri')
+
+        if schema and not uri:
+            cleaned_data['uri'] = schema.schema_uri
+            self.instance.uri = schema.schema_uri
+
+        # 调用模型的 clean() 方法进行 params 验证
+        # 需要先设置字段值到 instance，因为 model.clean() 需要访问这些值
+        for field, value in cleaned_data.items():
+            setattr(self.instance, field, value)
+
+        try:
+            self.instance.clean()
+        except forms.ValidationError as e:
+            # 将模型验证错误传递到表单
+            raise e
+
+        return cleaned_data
+
+
 class AgentExtensionInline(admin.TabularInline):
     """
     内联编辑 Agent 扩展（AgentCapabilities.extensions）
@@ -234,10 +274,11 @@ class AgentExtensionInline(admin.TabularInline):
     参考：https://a2a-protocol.org/latest/topics/extensions/
     """
     model = AgentExtension
+    form = AgentExtensionForm  # 使用自定义表单
     extra = 0
 
     # 字段顺序：核心字段在前，辅助字段在后
-    fields = ['uri', 'params', 'description', 'required', 'schema', 'order']
+    fields = ['schema', 'uri', 'params', 'description', 'required', 'order']
     autocomplete_fields = ['schema']
     ordering = ['order', 'uri']
 
@@ -323,16 +364,51 @@ class AgentCardAdmin(admin.ModelAdmin):
 
 
     def agentcard_json_preview(self, obj):
-        """预览完整的 AgentCard JSON（符合 A2A 规范）"""
+        """预览完整的 AgentCard JSON（允许不完整数据）"""
         if obj.pk:
-            card_json = obj.to_agentcard_json(include_metadata=True)
-            json_str = json.dumps(card_json, indent=2, ensure_ascii=False)
-            return format_html(
-                '<pre style="background:#f5f5f5;padding:10px;border-radius:5px;max-height:400px;overflow:auto;">{}</pre>',
-                json_str
-            )
+            try:
+                # 预览模式：validate=False，允许显示不完整的数据
+                card_json = obj.to_agentcard_json(include_metadata=True, validate=False)
+                json_str = json.dumps(card_json, indent=2, ensure_ascii=False)
+
+                # 检查是否缺少必填字段（提示但不阻止显示）
+                warnings = []
+                if not obj.name or not obj.name.strip():
+                    warnings.append('name')
+                if not obj.description or not obj.description.strip():
+                    warnings.append('description')
+                if not obj.url or not obj.url.strip():
+                    warnings.append('url')
+                if not obj.default_input_modes or len(obj.default_input_modes) == 0:
+                    warnings.append('defaultInputModes')
+                if not obj.default_output_modes or len(obj.default_output_modes) == 0:
+                    warnings.append('defaultOutputModes')
+                if not obj.skills or len(obj.skills) == 0:
+                    warnings.append('skills')
+
+                warning_html = ''
+                if warnings:
+                    warning_html = format_html(
+                        '<div style="color:#856404;background:#fff3cd;padding:10px;border-radius:5px;margin-bottom:10px;">'
+                        '<strong>⚠️ 预览模式（数据不完整）</strong><br>'
+                        '以下 A2A 协议必填字段缺失，导出到生产环境前需要补充：<br>'
+                        '• {}'
+                        '</div>',
+                        '<br>• '.join(warnings)
+                    )
+
+                return format_html(
+                    '{}<pre style="background:#f5f5f5;padding:10px;border-radius:5px;max-height:400px;overflow:auto;">{}</pre>',
+                    warning_html,
+                    json_str
+                )
+            except Exception as e:
+                return format_html(
+                    '<div style="color:red;padding:10px;background:#ffe0e0;border-radius:5px;">生成预览失败：{}</div>',
+                    str(e)
+                )
         return "保存后生成"
-    agentcard_json_preview.short_description = 'AgentCard JSON 预览'
+    agentcard_json_preview.short_description = 'AgentCard JSON 预览（允许不完整）'
 
     def save_model(self, request, obj, form, change):
         """保存时自动设置创建者/更新者"""
