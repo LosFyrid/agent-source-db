@@ -55,7 +55,7 @@ nano .env.prod
 # Django
 DJANGO_SECRET_KEY=<运行命令生成: openssl rand -base64 50>
 DJANGO_DEBUG=False
-DJANGO_ALLOWED_HOSTS=YOUR_SERVER_IP,localhost
+DJANGO_ALLOWED_HOSTS=YOUR_SERVER_IP,localhost,web  # 注意：必须包含 web（Caddy 反向代理需要）
 
 # Caddy Web 服务器配置
 # 无域名场景（通过 IP 访问）: CADDY_ADDRESS=:80
@@ -64,6 +64,7 @@ CADDY_ADDRESS=:80
 
 # PostgreSQL
 POSTGRES_PASSWORD=<强密码>
+# 注意：DATABASE_URL 格式为 postgres://用户名:密码@主机:端口/数据库名
 DATABASE_URL=postgres://produser:<刚才的密码>@db:5432/agentcard_prod
 ```
 
@@ -295,6 +296,38 @@ docker-compose -f docker-compose.prod.yml restart caddy
 ```
 
 **详细排查步骤**: 参见 `docs/DEPLOYMENT.md` 的故障排查章节
+
+### 数据库连接错误
+
+**症状**: `FATAL: database "produser" does not exist`
+
+**原因**: `DATABASE_URL` 配置错误，数据库名和用户名混淆
+
+**修复**:
+```bash
+# 检查 .env.prod 配置
+cat .env.prod | grep -E "POSTGRES_|DATABASE_URL"
+
+# 正确的配置格式：
+# POSTGRES_DB=agentcard_prod
+# POSTGRES_USER=produser
+# POSTGRES_PASSWORD=你的密码
+# DATABASE_URL=postgres://produser:你的密码@db:5432/agentcard_prod
+#                       ↑用户名                      ↑数据库名
+```
+
+### ALLOWED_HOSTS 错误
+
+**症状**: `Invalid HTTP_HOST header: 'web:8000'. You may need to add 'web' to ALLOWED_HOSTS.`
+
+**原因**: Caddy 反向代理时使用 Docker 内部服务名 `web`，但未在 ALLOWED_HOSTS 中
+
+**修复**:
+```bash
+# 在 .env.prod 中添加 web 到 ALLOWED_HOSTS
+DJANGO_ALLOWED_HOSTS=YOUR_SERVER_IP,localhost,web
+#                                              ↑必须包含 web
+```
 
 ### 服务无法启动
 
