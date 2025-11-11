@@ -7,7 +7,7 @@ from django.http import JsonResponse
 from django.shortcuts import render
 from django.conf import settings
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('documents')  # 使用documents logger确保输出到正确的日志文件
 
 
 class ErrorTrackingMiddleware:
@@ -17,8 +17,14 @@ class ErrorTrackingMiddleware:
     功能：
     1. 捕获所有未处理的异常
     2. 生成唯一的错误追踪ID
-    3. 记录详细的错误信息到日志
+    3. 记录详细的错误信息到日志文件
     4. 返回友好的错误页面（包含追踪ID）
+    5. 在HTTP响应头中添加 X-Error-ID 便于追踪
+
+    行为：
+    - API请求（/api/*）：返回JSON格式的错误响应
+    - 普通Web请求：显示友好的自定义错误页面（500.html）
+    - 所有错误都记录到 logs/error.log 文件中，格式为 [ERROR-XXXXXXXX]
     """
 
     def __init__(self, get_response):
@@ -31,13 +37,18 @@ class ErrorTrackingMiddleware:
     def process_exception(self, request, exception):
         """
         处理未捕获的异常
+
+        注意：此方法在任何未处理的异常时都会被调用，包括：
+        - 500 Internal Server Error
+        - ValidationError (如果未在视图中捕获)
+        - 其他未处理的异常
         """
         # 生成唯一的错误追踪ID
         error_id = str(uuid.uuid4())[:8].upper()
 
-        # 记录详细错误信息
+        # 记录详细错误信息（始终记录，无论DEBUG状态）
         logger.error(
-            f"[ERROR-{error_id}] Unhandled exception",
+            f"[ERROR-{error_id}] Unhandled exception: {type(exception).__name__}",
             extra={
                 'error_id': error_id,
                 'path': request.path,
@@ -53,17 +64,21 @@ class ErrorTrackingMiddleware:
         # 根据请求类型返回不同的响应
         if request.path.startswith('/api/'):
             # API请求：返回JSON格式错误
-            return JsonResponse({
+            response = JsonResponse({
                 'error': 'Internal Server Error',
                 'message': '服务器内部错误，请稍后重试',
                 'error_id': error_id,
                 'detail': str(exception) if settings.DEBUG else None
             }, status=500)
-        else:
-            # Web请求：返回HTML错误页面
-            return render(request, '500.html', {
-                'error_id': error_id,
-            }, status=500)
+            response['X-Error-ID'] = error_id
+            return response
+
+        # Web请求：返回友好的错误页面
+        response = render(request, '500.html', {
+            'error_id': error_id,
+        }, status=500)
+        response['X-Error-ID'] = error_id
+        return response
 
     @staticmethod
     def _get_client_ip(request):
