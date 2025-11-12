@@ -5,7 +5,7 @@ DRF Serializers for AgentCard Management System
 """
 
 from rest_framework import serializers
-from .models import Namespace, SchemaRegistry, SchemaField, AgentCard
+from .models import Namespace, SchemaRegistry, SchemaField, AgentCard, AgentCase
 
 
 # ========================================
@@ -305,3 +305,115 @@ class SchemaCatalogSerializer(serializers.Serializer):
     catalog = serializers.DictField()
     categories = serializers.ListField()
     total_schemas = serializers.IntegerField()
+
+
+# ========================================
+# AgentCase Serializers
+# ========================================
+
+class AgentCaseListSerializer(serializers.ModelSerializer):
+    """
+    AgentCase 列表序列化器（精简版）
+    """
+    agent_name = serializers.CharField(source='agent_card.name', read_only=True, allow_null=True)
+    agent_version = serializers.CharField(source='agent_card.version', read_only=True, allow_null=True)
+    namespace_id = serializers.CharField(source='agent_card.namespace.id', read_only=True, allow_null=True)
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True, allow_null=True)
+    updated_by_username = serializers.CharField(source='updated_by.username', read_only=True, allow_null=True)
+
+    class Meta:
+        model = AgentCase
+        fields = [
+            'id', 'case_name', 'agent_card', 'agent_name', 'agent_version', 'namespace_id',
+            'is_ground_truth', 'query_key', 'outcome_type', 'case_score',
+            'created_at', 'updated_at', 'created_by_username', 'updated_by_username'
+        ]
+        read_only_fields = ['created_at', 'updated_at']
+
+
+class AgentCaseDetailSerializer(serializers.ModelSerializer):
+    """
+    AgentCase 详情序列化器（完整版）
+    """
+    agent_card_detail = AgentCardListSerializer(source='agent_card', read_only=True)
+    outcome_file_url = serializers.SerializerMethodField()
+    created_by_username = serializers.CharField(source='created_by.username', read_only=True, allow_null=True)
+    updated_by_username = serializers.CharField(source='updated_by.username', read_only=True, allow_null=True)
+
+    class Meta:
+        model = AgentCase
+        fields = '__all__'
+        read_only_fields = ['created_at', 'updated_at', 'created_by', 'updated_by']
+
+    def get_outcome_file_url(self, obj):
+        """返回文件的完整URL"""
+        if obj.outcome_file:
+            request = self.context.get('request')
+            if request:
+                return request.build_absolute_uri(obj.outcome_file.url)
+            return obj.outcome_file.url
+        return None
+
+
+class AgentCaseCreateUpdateSerializer(serializers.ModelSerializer):
+    """
+    AgentCase 创建/更新序列化器（带验证）
+    """
+
+    class Meta:
+        model = AgentCase
+        fields = [
+            'agent_card', 'case_name', 'is_ground_truth', 'agent_version',
+            'query_key', 'query_description', 'query_value',
+            'outcome_type', 'outcome_data', 'outcome_file', 'outcome_notes',
+            'route_to', 'case_score'
+        ]
+
+    def validate_case_score(self, value):
+        """验证评分范围"""
+        if value is not None and (value < 0.0 or value > 1.0):
+            raise serializers.ValidationError("评分必须在0.0-1.0之间")
+        return value
+
+    def validate(self, data):
+        """跨字段验证"""
+        # 验证唯一性约束（同一agent下case_name唯一）
+        agent_card = data.get('agent_card')
+        case_name = data.get('case_name')
+
+        if agent_card and case_name:
+            existing = AgentCase.objects.filter(
+                agent_card=agent_card,
+                case_name=case_name
+            )
+            # 更新操作时排除当前对象
+            if self.instance:
+                existing = existing.exclude(pk=self.instance.pk)
+
+            if existing.exists():
+                raise serializers.ValidationError({
+                    'case_name': f"该agent下已存在名为'{case_name}'的case"
+                })
+
+        # 验证agent_version合法性
+        agent_version = data.get('agent_version', '*')
+        if agent_card and agent_version:
+            special_values = ['', '*', 'latest']
+            if agent_version not in special_values:
+                # 查询该agent的所有可用版本
+                available_versions = list(AgentCard.objects.filter(
+                    namespace=agent_card.namespace,
+                    name=agent_card.name
+                ).values_list('version', flat=True))
+
+                if agent_version not in available_versions:
+                    version_list = ', '.join(f"'{v}'" for v in available_versions)
+                    raise serializers.ValidationError({
+                        'agent_version': (
+                            f"版本'{agent_version}'不存在于agent "
+                            f"'{agent_card.namespace.id}::{agent_card.name}'。"
+                            f"可用版本: {version_list}"
+                        )
+                    })
+
+        return data

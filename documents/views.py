@@ -10,7 +10,9 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticatedOrReadOnly
 from django.db.models import Count
 
-from .models import Namespace, SchemaRegistry, AgentCard
+from django.db.models import Q
+
+from .models import Namespace, SchemaRegistry, AgentCard, AgentCase
 from .serializers import (
     NamespaceSerializer,
     SchemaRegistryListSerializer,
@@ -20,6 +22,9 @@ from .serializers import (
     AgentCardCreateUpdateSerializer,
     AgentCardStandardSerializer,
     SchemaCatalogSerializer,
+    AgentCaseListSerializer,
+    AgentCaseDetailSerializer,
+    AgentCaseCreateUpdateSerializer,
 )
 
 
@@ -263,3 +268,99 @@ class AgentCardViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
+
+
+# ========================================
+# AgentCase ViewSet
+# ========================================
+
+class AgentCaseViewSet(viewsets.ModelViewSet):
+    """
+    AgentCase API
+
+    提供 AgentCase 的 CRUD 操作
+
+    list: GET /api/cases/
+    retrieve: GET /api/cases/{id}/
+    create: POST /api/cases/
+    update: PUT /api/cases/{id}/
+    partial_update: PATCH /api/cases/{id}/
+    destroy: DELETE /api/cases/{id}/
+    """
+    queryset = AgentCase.objects.all().select_related(
+        'agent_card', 'agent_card__namespace', 'created_by', 'updated_by'
+    ).order_by('-created_at')
+    permission_classes = [IsAuthenticatedOrReadOnly]
+
+    def get_serializer_class(self):
+        """
+        根据操作类型选择序列化器
+        """
+        if self.action == 'list':
+            return AgentCaseListSerializer
+        elif self.action in ['create', 'update', 'partial_update']:
+            return AgentCaseCreateUpdateSerializer
+        return AgentCaseDetailSerializer
+
+    def get_queryset(self):
+        """
+        支持查询参数过滤
+
+        查询参数：
+        - agent_card: 按agent_card ID过滤
+        - version: 按agent版本过滤（支持通配符*、latest、具体版本）
+        - is_ground_truth: 只返回ground truth cases
+        - query_key: 按查询问题标识过滤
+        - unassigned: 只返回未分配agent的cases
+        """
+        queryset = super().get_queryset()
+
+        # 按agent_card过滤
+        agent_card_id = self.request.query_params.get('agent_card')
+        if agent_card_id:
+            queryset = queryset.filter(agent_card_id=agent_card_id)
+
+            # 按版本过滤（支持通配符）
+            version = self.request.query_params.get('version')
+            if version:
+                queryset = queryset.filter(
+                    Q(agent_version='') |
+                    Q(agent_version='*') |
+                    Q(agent_version='latest') |
+                    Q(agent_version=version)
+                )
+
+        # 只返回ground truth
+        is_ground_truth = self.request.query_params.get('is_ground_truth')
+        if is_ground_truth and is_ground_truth.lower() == 'true':
+            queryset = queryset.filter(is_ground_truth=True)
+
+        # 按查询问题标识过滤
+        query_key = self.request.query_params.get('query_key')
+        if query_key:
+            queryset = queryset.filter(query_key__icontains=query_key)
+
+        # 只返回未分配的cases
+        unassigned = self.request.query_params.get('unassigned')
+        if unassigned and unassigned.lower() == 'true':
+            queryset = queryset.filter(agent_card__isnull=True)
+
+        return queryset
+
+    def perform_create(self, serializer):
+        """
+        创建时自动设置创建者
+        """
+        if self.request.user.is_authenticated:
+            serializer.save(created_by=self.request.user, updated_by=self.request.user)
+        else:
+            serializer.save()
+
+    def perform_update(self, serializer):
+        """
+        更新时自动设置更新者
+        """
+        if self.request.user.is_authenticated:
+            serializer.save(updated_by=self.request.user)
+        else:
+            serializer.save()

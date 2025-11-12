@@ -10,7 +10,7 @@ from django.urls import reverse
 from django import forms
 import json
 
-from .models import Namespace, SchemaRegistry, SchemaField, AgentCard, AgentExtension
+from .models import Namespace, SchemaRegistry, SchemaField, AgentCard, AgentExtension, AgentCase
 
 
 # ========================================
@@ -456,6 +456,82 @@ class AgentCardAdmin(admin.ModelAdmin):
 #             'fields': ['description', 'required', 'params']
 #         }),
 #     ]
+
+
+# ========================================
+# AgentCase Admin
+# ========================================
+
+@admin.register(AgentCase)
+class AgentCaseAdmin(admin.ModelAdmin):
+    """
+    AgentCase 管理界面
+    """
+    list_display = [
+        'case_name', 'agent_card_link', 'agent_version_display',
+        'is_ground_truth', 'outcome_type', 'case_score',
+        'created_by', 'created_at'
+    ]
+    list_filter = [
+        'is_ground_truth', 'outcome_type', 'agent_card',
+        'created_at', 'agent_version'
+    ]
+    search_fields = [
+        'case_name', 'query_key', 'query_description',
+        'agent_card__name', 'agent_card__namespace__id'
+    ]
+    ordering = ['-created_at']
+    autocomplete_fields = ['agent_card']
+
+    fieldsets = [
+        ('基本信息', {
+            'fields': ['case_name', 'agent_card', 'agent_version', 'is_ground_truth']
+        }),
+        ('查询字段', {
+            'fields': ['query_key', 'query_description', 'query_value']
+        }),
+        ('执行结果', {
+            'fields': ['outcome_type', 'outcome_data', 'outcome_file', 'outcome_notes']
+        }),
+        ('路由和评分', {
+            'fields': ['route_to', 'case_score']
+        }),
+        ('审计信息', {
+            'fields': ['created_at', 'updated_at', 'created_by', 'updated_by'],
+            'classes': ['collapse']
+        }),
+    ]
+
+    readonly_fields = ['created_at', 'updated_at', 'created_by', 'updated_by']
+
+    def agent_card_link(self, obj):
+        """显示关联的AgentCard链接"""
+        if obj.agent_card:
+            url = reverse('admin:documents_agentcard_change', args=[obj.agent_card.id])
+            return format_html(
+                '<a href="{}">{}</a>',
+                url,
+                f"{obj.agent_card.namespace.id}::{obj.agent_card.name}"
+            )
+        return '未分配'
+    agent_card_link.short_description = 'Agent'
+
+    def agent_version_display(self, obj):
+        """显示版本号，特殊值标记颜色"""
+        if not obj.agent_version or obj.agent_version == '*':
+            return format_html('<span style="color: green;">* (通用)</span>')
+        elif obj.agent_version == 'latest':
+            return format_html('<span style="color: blue;">latest</span>')
+        else:
+            return obj.agent_version
+    agent_version_display.short_description = '版本'
+
+    def save_model(self, request, obj, form, change):
+        """保存时自动设置创建人/更新人"""
+        if not change:  # 创建时
+            obj.created_by = request.user
+        obj.updated_by = request.user
+        super().save_model(request, obj, form, change)
 
 
 # ========================================

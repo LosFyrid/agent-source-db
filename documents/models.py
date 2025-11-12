@@ -1516,3 +1516,192 @@ class AgentExtension(models.Model):
         # 2. AgentExtensionForm.clean() 已经验证了 params 数据
         # 3. 在这里再次调用会导致双重验证和错误的错误消息（因为此时 self.params 可能还是旧值）
         super().save(*args, **kwargs)
+
+
+class AgentCase(models.Model):
+    """
+    Agent测试用例（Test Case）
+
+    用于存储agent行为的少样本提示案例库。
+    支持独立存在（未分配agent）或关联到特定agent。
+    """
+
+    # 关联字段
+    agent_card = models.ForeignKey(
+        AgentCard,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='test_cases',
+        help_text="关联的AgentCard（可选）。留空表示该case尚未分配给特定agent"
+    )
+
+    # 基础元数据
+    case_name = models.CharField(
+        max_length=255,
+        db_index=True,
+        help_text="测试用例名称"
+    )
+
+    is_ground_truth = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="是否为标准测试集（ground truth）"
+    )
+
+    agent_version = models.CharField(
+        max_length=32,
+        blank=True,
+        default='*',
+        help_text=(
+            "适用的agent版本\n"
+            "• 留空或'*' = 适用所有版本\n"
+            "• 'latest' = 自动跟随最新版本\n"
+            "• 'v1.0' = 仅适用v1.0版本"
+        )
+    )
+
+    # 查询字段
+    query_key = models.TextField(
+        db_index=True,
+        help_text="查询问题"
+    )
+
+    query_description = models.TextField(
+        blank=True,
+        help_text="查询的补充说明或context（可选）"
+    )
+
+    query_value = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="结构化的查询结果（JSON）"
+    )
+
+    # 执行结果字段
+    outcome_type = models.CharField(
+        max_length=32,
+        default='json',
+        db_index=True,
+        help_text="outcome类型。常用: json, text, binary, image, error"
+    )
+
+    outcome_data = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="存储JSON、文本或错误信息等（JSON）"
+    )
+
+    outcome_file = models.FileField(
+        upload_to='case_outcomes/%Y/%m/',
+        null=True,
+        blank=True,
+        max_length=512,
+        help_text="存储二进制文件、图片等"
+    )
+
+    outcome_notes = models.TextField(
+        blank=True,
+        help_text="outcome的人工备注说明（可选）"
+    )
+
+    # 路由字段
+    route_to = models.JSONField(
+        null=True,
+        blank=True,
+        help_text=(
+            "下一步路由目标（JSON格式）\n"
+            "示例:\n"
+            '• {"type": "agent", "agent_id": 123}\n'
+            '• {"type": "human", "assignee": "user@example.com"}\n'
+            '• {"type": "code", "function": "process_result"}\n'
+            "• null = 终点节点"
+        )
+    )
+
+    # 评分字段
+    case_score = models.FloatField(
+        null=True,
+        blank=True,
+        help_text="人类对case正确性的评估打分（0.0-1.0）"
+    )
+
+    # 审计字段
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_cases',
+        help_text="创建人"
+    )
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='updated_cases',
+        help_text="最后更新人"
+    )
+
+    class Meta:
+        db_table = 'agent_cases'
+        verbose_name = 'Agent Test Case'
+        verbose_name_plural = 'Agent Test Cases'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['agent_card', 'is_ground_truth']),
+            models.Index(fields=['agent_card', 'case_score']),
+            models.Index(fields=['agent_card', 'agent_version']),
+            models.Index(fields=['query_key']),
+            models.Index(fields=['outcome_type']),
+            models.Index(fields=['is_ground_truth']),
+        ]
+
+    def __str__(self):
+        agent_info = f"{self.agent_card.name}" if self.agent_card else "未分配"
+        return f"{self.case_name} ({agent_info})"
+
+    def clean(self):
+        super().clean()
+
+        # 验证1: case_score范围
+        if self.case_score is not None:
+            if self.case_score < 0.0 or self.case_score > 1.0:
+                raise ValidationError({
+                    'case_score': '评分必须在0.0-1.0之间'
+                })
+
+        # 验证2: 唯一性约束（同一agent下case_name唯一）
+        if self.agent_card:
+            existing = AgentCase.objects.filter(
+                agent_card=self.agent_card,
+                case_name=self.case_name
+            ).exclude(pk=self.pk)
+
+            if existing.exists():
+                raise ValidationError({
+                    'case_name': f"该agent下已存在名为'{self.case_name}'的case"
+                })
+
+        # 验证3: agent_version版本合法性
+        if self.agent_card and self.agent_version:
+            special_values = ['', '*', 'latest']
+            if self.agent_version not in special_values:
+                # 查询该agent的所有可用版本
+                available_versions = AgentCard.objects.filter(
+                    namespace=self.agent_card.namespace,
+                    name=self.agent_card.name
+                ).values_list('version', flat=True)
+
+                if self.agent_version not in available_versions:
+                    version_list = ', '.join(f"'{v}'" for v in available_versions)
+                    raise ValidationError({
+                        'agent_version': (
+                            f"版本'{self.agent_version}'不存在于agent "
+                            f"'{self.agent_card.namespace.id}::{self.agent_card.name}'。\n"
+                            f"可用版本: {version_list}"
+                        )
+                    })

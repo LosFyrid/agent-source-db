@@ -13,6 +13,7 @@ router = DefaultRouter()
 router.register(r'namespaces', views.NamespaceViewSet, basename='namespace')
 router.register(r'schemas', views.SchemaRegistryViewSet, basename='schema')
 router.register(r'agentcards', views.AgentCardViewSet, basename='agentcard')
+router.register(r'cases', views.AgentCaseViewSet, basename='agentcase')
 
 # URL patterns
 urlpatterns = [
